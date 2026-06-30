@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Dark mods FCresearch
 // @namespace    http://tampermonkey.net/
-// @version      1.03.01
-// @author       aolenche_1
+// @version      1.03
+// @author       aolenche
 // @match        https://fcresearch-eu.aka.amazon.com/*
 // @match        http://fcresearch-eu.aka.amazon.com/*
 // @match        https://qi-fcresearch-eu.corp.amazon.com/*
