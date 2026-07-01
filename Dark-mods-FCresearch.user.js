@@ -3,6 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.04
 // @author       aolenche
+// @description  Adds color themes to FCResearch page
 // @match        https://fcresearch-eu.aka.amazon.com/*
 // @match        http://fcresearch-eu.aka.amazon.com/*
 // @match        https://qi-fcresearch-eu.corp.amazon.com/*
