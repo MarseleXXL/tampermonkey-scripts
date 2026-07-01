@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dark mods FCresearch
 // @namespace    http://tampermonkey.net/
-// @version      1.03
+// @version      1.04
 // @author       aolenche
 // @match        https://fcresearch-eu.aka.amazon.com/*
 // @match        http://fcresearch-eu.aka.amazon.com/*
@@ -123,7 +123,107 @@
     controlsContainer.style.top = '8px';
     controlsContainer.style.zIndex = '9999';
     controlsContainer.style.display = 'flex';
-    controlsContainer.style.gap = '10px';
+    controlsContainer.style.gap = '8px';
+    controlsContainer.style.alignItems = 'center';
+    controlsContainer.style.setProperty('background-color', 'transparent', 'important');
+    controlsContainer.style.setProperty('box-shadow', 'none', 'important');
+
+    const controlsToggleButton = document.createElement('button');
+    controlsToggleButton.type = 'button';
+    controlsToggleButton.style.width = '22px';
+    controlsToggleButton.style.height = '32px';
+    controlsToggleButton.style.padding = '0';
+    controlsToggleButton.style.backgroundColor = '#333';
+    controlsToggleButton.style.color = '#fff';
+    controlsToggleButton.style.border = '1px solid #444';
+    controlsToggleButton.style.borderRadius = '4px';
+    controlsToggleButton.style.cursor = 'pointer';
+    controlsToggleButton.style.display = 'inline-flex';
+    controlsToggleButton.style.alignItems = 'center';
+    controlsToggleButton.style.justifyContent = 'center';
+    controlsToggleButton.style.fontSize = '0';
+    controlsToggleButton.style.lineHeight = '1';
+    controlsToggleButton.style.flexShrink = '0';
+
+    const controlsToggleIcon = document.createElement('span');
+    controlsToggleIcon.style.width = '13px';
+    controlsToggleIcon.style.height = '13px';
+    controlsToggleIcon.style.display = 'inline-block';
+    controlsToggleIcon.style.backgroundColor = '#fff';
+    controlsToggleIcon.style.setProperty('background-color', '#fff', 'important');
+    controlsToggleIcon.style.transition = 'transform 0.26s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.18s ease';
+    controlsToggleIcon.style.transformOrigin = 'center';
+    controlsToggleIcon.style.webkitMaskImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M8.55 4.35a1.25 1.25 0 0 1 1.77 0l6.8 6.8a1.2 1.2 0 0 1 0 1.7l-6.8 6.8a1.25 1.25 0 0 1-1.77-1.77L14.66 12 8.55 5.88a1.25 1.25 0 0 1 0-1.53Z'/%3E%3C/svg%3E")`;
+    controlsToggleIcon.style.webkitMaskRepeat = 'no-repeat';
+    controlsToggleIcon.style.webkitMaskPosition = 'center';
+    controlsToggleIcon.style.webkitMaskSize = '13px 13px';
+    controlsToggleIcon.style.maskImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M8.55 4.35a1.25 1.25 0 0 1 1.77 0l6.8 6.8a1.2 1.2 0 0 1 0 1.7l-6.8 6.8a1.25 1.25 0 0 1-1.77-1.77L14.66 12 8.55 5.88a1.25 1.25 0 0 1 0-1.53Z'/%3E%3C/svg%3E")`;
+    controlsToggleIcon.style.maskRepeat = 'no-repeat';
+    controlsToggleIcon.style.maskPosition = 'center';
+    controlsToggleIcon.style.maskSize = '13px 13px';
+    controlsToggleButton.appendChild(controlsToggleIcon);
+
+    const controlsPanel = document.createElement('div');
+    controlsPanel.style.display = 'flex';
+    controlsPanel.style.position = 'relative';
+    controlsPanel.style.alignItems = 'center';
+    controlsPanel.style.gap = '8px';
+    controlsPanel.style.overflow = 'visible';
+    controlsPanel.style.whiteSpace = 'nowrap';
+    controlsPanel.style.maxWidth = '900px';
+    controlsPanel.style.opacity = '1';
+    controlsPanel.style.transform = 'translateX(0)';
+    controlsPanel.style.transition = 'opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1), transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)';
+    controlsPanel.style.willChange = 'opacity, transform';
+    controlsPanel.style.backfaceVisibility = 'hidden';
+    controlsPanel.style.setProperty('background-color', 'transparent', 'important');
+    controlsPanel.style.setProperty('box-shadow', 'none', 'important');
+
+    controlsContainer.appendChild(controlsPanel);
+    controlsContainer.appendChild(controlsToggleButton);
+
+    let isControlsMenuHidden = getCookie('controlsMenuHidden') === true;
+
+    function applyControlsMenuState(skipTransition) {
+        const previousTransition = controlsPanel.style.transition;
+        if (skipTransition) {
+            controlsPanel.style.transition = 'none';
+        }
+        controlsToggleIcon.style.transform = isControlsMenuHidden ? 'rotate(0deg)' : 'rotate(180deg)';
+        controlsToggleButton.title = isControlsMenuHidden ? 'Show menu' : 'Hide menu';
+        controlsPanel.style.maxWidth = '900px';
+        clearTimeout(controlsPanel.darkmodsVisibilityTimer);
+        controlsContainer.style.setProperty('background-color', 'transparent', 'important');
+        controlsPanel.style.setProperty('background-color', 'transparent', 'important');
+        controlsPanel.style.opacity = isControlsMenuHidden ? '0' : '1';
+        controlsPanel.style.transform = isControlsMenuHidden ? 'translate3d(14px, 0, 0)' : 'translate3d(0, 0, 0)';
+        controlsPanel.style.pointerEvents = isControlsMenuHidden ? 'none' : 'auto';
+        controlsPanel.style.visibility = 'visible';
+        controlsPanel.style.overflow = 'visible';
+        if (isControlsMenuHidden) {
+            controlsPanel.darkmodsVisibilityTimer = setTimeout(() => {
+                if (isControlsMenuHidden) {
+                    controlsPanel.style.visibility = 'hidden';
+                }
+            }, skipTransition ? 0 : 280);
+        }
+        if (isControlsMenuHidden) {
+            hideFloatingElement(themePickerMenu, true);
+            hideFloatingElement(colorEditor, true);
+        }
+        if (skipTransition) {
+            requestAnimationFrame(() => {
+                controlsPanel.style.transition = previousTransition;
+            });
+        }
+    }
+
+    controlsToggleButton.addEventListener('click', () => {
+        isControlsMenuHidden = !isControlsMenuHidden;
+        setCookie('controlsMenuHidden', isControlsMenuHidden, 365);
+        applyControlsMenuState(false);
+    });
+
     const overlayRect = document.createElement('div');
     overlayRect.className = 'overlay-rect';
     overlayRect.style.position = 'fixed';
@@ -133,17 +233,36 @@
     overlayRect.style.width = '100vw';
     overlayRect.style.zIndex = '9998';
     overlayRect.style.pointerEvents = 'none';
+    overlayRect.style.opacity = '1';
     let controlsRetryTimeout;
+    function syncControlsHeight() {
+        const searchInput = document.querySelector('#search, .a-search input, input[type="search"].a-input-text');
+        const rect = searchInput ? searchInput.getBoundingClientRect() : null;
+        const height = Math.max(28, Math.round(rect ? rect.height : 32));
+        const px = `${height}px`;
+        if (rect) {
+            controlsContainer.style.top = `${Math.round(rect.top)}px`;
+        }
+        [themePickerButton, modeLabel, editButton, controlsToggleButton].forEach(el => {
+            el.style.height = px;
+            el.style.minHeight = px;
+        });
+        themePickerMenu.style.top = `${height + 4}px`;
+        colorEditor.style.top = `${height + 4}px`;
+        syncColorEditorPosition();
+    }
+
     function updateControlsPosition() {
+        syncControlsHeight();
         clearTimeout(controlsRetryTimeout);
 
         const searchButton = document.querySelector('input.a-button-input[aria-labelledby="search-button-announce"]');
         const viewportPadding = 8;
-        let targetLeft = 50;
+        let targetLeft = 140;
 
         if (searchButton) {
             const rect = searchButton.getBoundingClientRect();
-            const offset = 670;
+            const offset = 720;
             targetLeft = rect.left - offset;
         } else {
             controlsRetryTimeout = setTimeout(debouncedUpdateControlsPosition, 500);
@@ -171,13 +290,14 @@
     themeSelector.style.cursor = 'pointer';
 
     const themes = [
-        { value: 'light', text: 'Light mode' },
-    { value: 'batman', text: 'Batman mode' },
-    { value: 'matrix', text: 'Matrix mode' },
-    { value: 'terminator', text: 'Terminator mode' },
-    { value: 'pink', text: 'Pink mode' },
-    { value: 'space', text: 'Space mode' },
-    { value: 'custom', text: 'Custom mode' }
+        { value: 'light', text: 'Light' },
+    { value: 'noir', text: 'Noir' },
+    { value: 'batman', text: 'Batman' },
+    { value: 'matrix', text: 'Matrix' },
+    { value: 'terminator', text: 'Terminator' },
+    { value: 'pink', text: 'Pink' },
+    { value: 'space', text: 'Space' },
+    { value: 'custom', text: 'Custom' }
     ];
 
     themes.forEach(theme => {
@@ -187,45 +307,198 @@
         themeSelector.appendChild(option);
     });
 
-    controlsContainer.appendChild(themeSelector);
+    themeSelector.style.display = 'none';
+    controlsPanel.appendChild(themeSelector);
+
+    const themeModeGroup = document.createElement('div');
+    themeModeGroup.style.display = 'flex';
+    themeModeGroup.style.alignItems = 'center';
+    themeModeGroup.style.gap = '0';
+
+    const themePicker = document.createElement('div');
+    themePicker.style.position = 'relative';
+
+    const themePickerButton = document.createElement('button');
+    themePickerButton.type = 'button';
+    themePickerButton.style.width = '128px';
+    themePickerButton.style.height = '32px';
+    themePickerButton.style.padding = '0 9px';
+    themePickerButton.style.setProperty('background-color', '#333', 'important');
+    themePickerButton.style.setProperty('color', '#fff', 'important');
+    themePickerButton.style.setProperty('border', '1px solid #444', 'important');
+    themePickerButton.style.borderRadius = '4px 0 0 4px';
+    themePickerButton.style.cursor = 'pointer';
+    themePickerButton.style.display = 'flex';
+    themePickerButton.style.alignItems = 'center';
+    themePickerButton.style.justifyContent = 'space-between';
+    themePickerButton.style.gap = '6px';
+    themePickerButton.style.boxSizing = 'border-box';
+
+    const themePickerMenu = document.createElement('div');
+    themePickerMenu.style.position = 'absolute';
+    themePickerMenu.style.top = '36px';
+    themePickerMenu.style.left = '0';
+    themePickerMenu.style.width = '128px';
+    themePickerMenu.style.padding = '4px';
+    themePickerMenu.style.setProperty('background-color', '#222', 'important');
+    themePickerMenu.style.setProperty('border', '1px solid #444', 'important');
+    themePickerMenu.style.borderRadius = '6px';
+    themePickerMenu.style.boxShadow = '0 8px 22px rgba(0, 0, 0, 0.45)';
+    themePickerMenu.style.display = 'none';
+    themePickerMenu.style.opacity = '0';
+    themePickerMenu.style.transform = 'translate3d(0, -6px, 0) scale(0.98)';
+    themePickerMenu.style.transformOrigin = 'top center';
+    themePickerMenu.style.transition = 'opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1), transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)';
+    themePickerMenu.style.willChange = 'opacity, transform';
+    themePickerMenu.style.backfaceVisibility = 'hidden';
+    themePickerMenu.style.pointerEvents = 'none';
+    themePickerMenu.style.zIndex = '10000';
+
+    const modeLabel = document.createElement('span');
+    modeLabel.textContent = 'mode';
+    modeLabel.style.height = '32px';
+    modeLabel.style.padding = '0 8px';
+    modeLabel.style.display = 'inline-flex';
+    modeLabel.style.alignItems = 'center';
+    modeLabel.style.minHeight = '32px';
+    modeLabel.style.boxSizing = 'border-box';
+    modeLabel.style.setProperty('background-color', '#333', 'important');
+    modeLabel.style.setProperty('color', '#fff', 'important');
+    modeLabel.style.setProperty('border', '1px solid #444', 'important');
+    modeLabel.style.borderRadius = '0 4px 4px 0';
+    modeLabel.style.marginLeft = '-1px';
+    modeLabel.style.lineHeight = '1';
+    modeLabel.style.fontSize = '13px';
+    modeLabel.style.fontWeight = '400';
+    modeLabel.style.letterSpacing = '0.1px';
+    modeLabel.style.userSelect = 'none';
+
+    themePicker.appendChild(themePickerButton);
+    themePicker.appendChild(themePickerMenu);
+    themeModeGroup.appendChild(themePicker);
+    themeModeGroup.appendChild(modeLabel);
+    controlsPanel.appendChild(themeModeGroup);
+
+    themePickerButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (isFloatingVisible(colorEditor)) {
+            hideFloatingElement(colorEditor);
+            setCookie('colorEditorState', 'none', 365);
+        }
+        toggleFloatingElement(themePickerMenu);
+    });
+
+    document.addEventListener('click', (event) => {
+        if (!themeModeGroup.contains(event.target)) {
+            hideFloatingElement(themePickerMenu);
+        }
+    });
 
     const editButton = document.createElement('button');
     editButton.innerText = 'Edit Colors';
-    editButton.style.padding = '8px 12px';
+    editButton.style.height = '32px';
+    editButton.style.padding = '0 12px';
     editButton.style.backgroundColor = '#333';
     editButton.style.color = '#fff';
     editButton.style.border = '1px solid #444';
     editButton.style.borderRadius = '4px';
+    editButton.style.boxSizing = 'border-box';
     editButton.style.cursor = 'pointer';
-    controlsContainer.appendChild(editButton);
+    controlsPanel.appendChild(editButton);
 
     const colorEditor = document.createElement('div');
     colorEditor.style.position = 'absolute';
-    colorEditor.style.top = '40px';
+    colorEditor.style.top = '36px';
     colorEditor.style.left = '0';
     colorEditor.style.zIndex = '9999';
     colorEditor.style.backgroundColor = '#222';
-    colorEditor.style.padding = '10px';
+    colorEditor.style.padding = '8px';
     colorEditor.style.border = '1px solid #444';
-    colorEditor.style.borderRadius = '4px';
+    colorEditor.style.borderRadius = '8px';
+    colorEditor.style.boxShadow = '0 8px 18px rgba(0, 0, 0, 0.32)';
     colorEditor.style.display = 'none';
-    colorEditor.style.width = '280px';
+    colorEditor.style.width = '260px';
+    colorEditor.style.boxSizing = 'border-box';
+    colorEditor.style.overflow = 'hidden';
+    colorEditor.style.opacity = '0';
+    colorEditor.style.transform = 'translate3d(0, -6px, 0) scale(0.98)';
+    colorEditor.style.transformOrigin = 'top center';
+    colorEditor.style.transition = 'opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1), transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)';
+    colorEditor.style.willChange = 'opacity, transform';
+    colorEditor.style.backfaceVisibility = 'hidden';
+    colorEditor.style.pointerEvents = 'none';
     colorEditor.innerHTML = `
-        <h3 style="color: #fff; margin: 0 0 10px 0;">Edit Colors</h3>
-        <div style="display: flex; flex-direction: row; align-items: center; margin-bottom: 10px;">
-            <div style="flex: 1; margin-right: 10px;">
-                <label style="color: #fff; display: block; margin-bottom: 5px;">Page Background:</label>
-                <input type="color" id="pageBg">
-                <button id="resetBackground" style="width: 100%; padding: 8px; background-color: #333; color: #fff; border: 1px solid #444; border-radius: 4px; cursor: pointer; text-align: center; margin-top: 5px;">Reset</button>
+        <div style="display: flex; flex-direction: column; gap: 0; position: relative; z-index: 1; background-color: transparent !important;">
+            <div style="display: grid; grid-template-columns: 18px 118px 36px 48px; gap: 7px; align-items: center; min-width: 0; padding: 2px 0 7px; background-color: transparent !important;">
+                <div style="width: 18px; height: 22px; display: flex; align-items: center; justify-content: center; background-color: transparent !important; color: #fff; font-size: 13px; line-height: 1;">◐</div>
+                <label style="color: #fff; display: block; line-height: 18px; font-size: 14px; white-space: nowrap; background-color: transparent !important;">Page Background</label>
+                <input type="color" id="pageBg" style="width: 36px; height: 26px; padding: 0; box-sizing: border-box; border-radius: 6px;">
+                <button id="resetBackground" style="width: 48px; height: 26px; padding: 0 3px; background-color: #333; color: #fff; border: 1px solid #444; border-radius: 6px; cursor: pointer; text-align: center; box-sizing: border-box; font-size: 13px;">Reset</button>
             </div>
-            <div style="flex: 1;">
-                <label style="color: #fff; display: block; margin-bottom: 5px;">Text Color:</label>
-                <input type="color" id="textColor">
-                <button id="resetText" style="width: 100%; padding: 8px; background-color: #333; color: #fff; border: 1px solid #444; border-radius: 4px; cursor: pointer; text-align: center; margin-top: 5px;">Reset</button>
+            <div style="height: 1px; background-color: rgba(255, 255, 255, 0.12) !important; margin: 0 2px;"></div>
+            <div style="display: grid; grid-template-columns: 18px 118px 36px 48px; gap: 7px; align-items: center; min-width: 0; padding: 7px 0 2px; background-color: transparent !important;">
+                <div style="width: 18px; height: 22px; display: flex; align-items: center; justify-content: center; background-color: transparent !important; color: #fff; font-size: 15px; font-weight: 600; line-height: 1;">T</div>
+                <label style="color: #fff; display: block; line-height: 18px; font-size: 14px; white-space: nowrap; background-color: transparent !important;">Text Color</label>
+                <input type="color" id="textColor" style="width: 36px; height: 26px; padding: 0; box-sizing: border-box; border-radius: 6px;">
+                <button id="resetText" style="width: 48px; height: 26px; padding: 0 3px; background-color: #333; color: #fff; border: 1px solid #444; border-radius: 6px; cursor: pointer; text-align: center; box-sizing: border-box; font-size: 13px;">Reset</button>
             </div>
         </div>
     `;
-    controlsContainer.appendChild(colorEditor);
+    controlsPanel.appendChild(colorEditor);
+
+    function syncColorEditorPosition() {
+        const panelRect = controlsPanel.getBoundingClientRect();
+        const toggleRect = controlsToggleButton.getBoundingClientRect();
+        const editorWidth = colorEditor.offsetWidth || parseInt(colorEditor.style.width, 10) || 260;
+        const rightEdge = Math.round(toggleRect.right - panelRect.left);
+        const left = Math.round(rightEdge - editorWidth);
+        colorEditor.style.left = `${left}px`;
+    }
+
+    function isFloatingVisible(element) {
+        return element.dataset.darkmodsVisible === 'true';
+    }
+
+    function showFloatingElement(element, instant) {
+        clearTimeout(element.darkmodsHideTimer);
+        element.dataset.darkmodsVisible = 'true';
+        element.style.display = 'block';
+        element.style.pointerEvents = 'auto';
+        const applyOpenState = () => {
+            element.style.opacity = '1';
+            element.style.transform = 'translate3d(0, 0, 0) scale(1)';
+        };
+        if (instant) {
+            applyOpenState();
+        } else {
+            requestAnimationFrame(applyOpenState);
+        }
+    }
+
+    function hideFloatingElement(element, instant) {
+        clearTimeout(element.darkmodsHideTimer);
+        element.dataset.darkmodsVisible = 'false';
+        element.style.pointerEvents = 'none';
+        element.style.opacity = '0';
+        element.style.transform = 'translate3d(0, -6px, 0) scale(0.98)';
+        if (instant) {
+            element.style.display = 'none';
+            return;
+        }
+        element.darkmodsHideTimer = setTimeout(() => {
+            if (!isFloatingVisible(element)) {
+                element.style.display = 'none';
+            }
+        }, 280);
+    }
+
+    function toggleFloatingElement(element) {
+        if (isFloatingVisible(element)) {
+            hideFloatingElement(element);
+        } else {
+            showFloatingElement(element);
+        }
+    }
 
     const colorCache = new Map();
 
@@ -236,8 +509,140 @@
     }
 
     let editorState = getCookie('colorEditorState');
-    if (editorState) {
-        colorEditor.style.display = editorState;
+    if (editorState === 'block') {
+        showFloatingElement(colorEditor, true);
+    } else {
+        hideFloatingElement(colorEditor, true);
+    }
+    hideFloatingElement(themePickerMenu, true);
+
+    let currentPickerColors = {
+        buttonBg: '#333',
+        menuBg: '#222',
+        textColor: '#fff',
+        borderColor: '#444',
+        activeBg: 'transparent',
+        hoverBg: '#444',
+        inactiveBg: 'transparent'
+    };
+
+    function getThemePreviewColors(themeValue) {
+        const defaults = getDefaultColors(themeValue);
+        if (themeValue !== 'light' && customColors[themeValue]) {
+            return {
+                pageBg: customColors[themeValue].pageBg || defaults.pageBg,
+                textColor: customColors[themeValue].textColor || defaults.textColor
+            };
+        }
+        return defaults;
+    }
+
+    function createThemeSwatch(themeValue) {
+        const colors = getThemePreviewColors(themeValue);
+        const wrapper = document.createElement('span');
+        wrapper.style.display = 'inline-flex';
+        wrapper.style.alignItems = 'center';
+        wrapper.style.gap = '2px';
+        wrapper.style.padding = '0';
+        wrapper.style.border = 'none';
+        wrapper.style.borderRadius = '0';
+        wrapper.style.setProperty('background-color', 'transparent', 'important');
+        wrapper.style.flexShrink = '0';
+
+        const bg = document.createElement('span');
+        bg.style.width = '12px';
+        bg.style.height = '12px';
+        bg.style.borderRadius = '3px';
+        bg.style.setProperty('background-color', colors.pageBg, 'important');
+        bg.style.border = '1px solid rgba(255, 255, 255, 0.35)';
+        bg.style.boxSizing = 'border-box';
+
+        const text = document.createElement('span');
+        text.style.width = '12px';
+        text.style.height = '12px';
+        text.style.borderRadius = '3px';
+        text.style.setProperty('background-color', colors.textColor, 'important');
+        text.style.border = '1px solid rgba(255, 255, 255, 0.35)';
+        text.style.boxSizing = 'border-box';
+
+        wrapper.appendChild(bg);
+        wrapper.appendChild(text);
+        return wrapper;
+    }
+
+    function updateThemePicker() {
+        const selected = themes.find(theme => theme.value === themeSelector.value) || themes[0];
+        themePickerButton.textContent = '';
+
+        const selectedLeft = document.createElement('span');
+        selectedLeft.className = 'darkmods-theme-picker-left';
+        selectedLeft.style.display = 'inline-flex';
+        selectedLeft.style.alignItems = 'center';
+        selectedLeft.style.gap = '6px';
+        selectedLeft.style.setProperty('background-color', 'transparent', 'important');
+        selectedLeft.appendChild(createThemeSwatch(selected.value));
+
+        const selectedName = document.createElement('span');
+        selectedName.className = 'darkmods-theme-picker-text';
+        selectedName.textContent = selected.text;
+        selectedName.style.whiteSpace = 'nowrap';
+        selectedName.style.setProperty('background-color', 'transparent', 'important');
+        selectedLeft.appendChild(selectedName);
+
+        const arrow = document.createElement('span');
+        arrow.className = 'darkmods-theme-picker-arrow';
+        arrow.textContent = '▾';
+        arrow.style.opacity = '0.85';
+        arrow.style.setProperty('background-color', 'transparent', 'important');
+        arrow.style.fontSize = '11px';
+
+        themePickerButton.appendChild(selectedLeft);
+        themePickerButton.appendChild(arrow);
+        themePickerMenu.textContent = '';
+
+        themes.forEach(theme => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.style.width = '100%';
+            item.style.padding = '6px 7px';
+            item.style.setProperty('background-color', theme.value === themeSelector.value ? currentPickerColors.activeBg : currentPickerColors.inactiveBg, 'important');
+            item.style.setProperty('color', currentPickerColors.textColor, 'important');
+            item.style.setProperty('border', 'none', 'important');
+            item.style.borderRadius = '4px';
+            item.style.cursor = 'pointer';
+            item.style.display = 'flex';
+            item.style.alignItems = 'center';
+            item.style.gap = '7px';
+            item.style.textAlign = 'left';
+
+            item.appendChild(createThemeSwatch(theme.value));
+
+            const name = document.createElement('span');
+            name.className = 'darkmods-theme-picker-text';
+            name.textContent = theme.text;
+            name.style.flex = '1';
+            name.style.whiteSpace = 'nowrap';
+            name.style.setProperty('background-color', 'transparent', 'important');
+            item.appendChild(name);
+
+            item.addEventListener('mouseenter', () => {
+                item.style.setProperty('background-color', currentPickerColors.hoverBg, 'important');
+            });
+            item.addEventListener('mouseleave', () => {
+                item.style.setProperty('background-color', theme.value === themeSelector.value ? currentPickerColors.activeBg : currentPickerColors.inactiveBg, 'important');
+            });
+            item.addEventListener('click', () => {
+                if (isFloatingVisible(colorEditor)) {
+                    hideFloatingElement(colorEditor);
+                    setCookie('colorEditorState', 'none', 365);
+                }
+                themeSelector.value = theme.value;
+                hideFloatingElement(themePickerMenu);
+                themeSelector.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+
+            themePickerMenu.appendChild(item);
+        });
     }
 
     const styleSheet = document.createElement('style');
@@ -380,6 +785,12 @@
                 option:hover {
                     background-color: ${colors.borderColor} !important;
                     color: ${colors.textColor} !important;
+                }
+                .darkmods-theme-picker-left,
+                .darkmods-theme-picker-text,
+                .darkmods-theme-picker-arrow {
+                    background: transparent !important;
+                    background-color: transparent !important;
                 }
                 .dropdown, .menu, .dropdown-menu, [class*="dropdown"], [class*="menu"] {
                     background-color: ${colors.elementBg} !important;
@@ -597,6 +1008,7 @@
                     display: inline-block !important;
                     position: relative !important;
                     top: 8px !important;
+                    left: -2px !important;
                     opacity: 1 !important;
                     border: none !important;
                     outline: none !important;
@@ -874,6 +1286,27 @@
                     background: transparent !important;
                     background-color: transparent !important;
                 }
+                ul.a-list-link li:has(a[href]) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.085)}, ${hexToRGBA(colors.textColor, 0.085)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    border-radius: 4px !important;
+                    margin: 1px 0 !important;
+                }
+                ul.a-list-link li:has(a[href]) a[href] {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                    color: ${colors.linkColor} !important;
+                    display: block !important;
+                    border-radius: 4px !important;
+                    padding: 2px 6px !important;
+                }
+                ul.a-list-link li:has(a[href]):hover {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.125)}, ${hexToRGBA(colors.textColor, 0.125)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                }
+                ul.a-list-link li:has(a[href]):hover a[href] {
+                    color: ${colors.linkHoverColor} !important;
+                }
                 ul.a-list-link li a:not([href]) {
                     color: ${colors.inactiveColor} !important;
                 }
@@ -1107,12 +1540,71 @@
         `;
     }
 
+    function applyThemePickerColors(colors) {
+        if (themeSelector.value === 'light') {
+            currentPickerColors = {
+                buttonBg: '#333',
+                menuBg: '#222',
+                textColor: '#fff',
+                borderColor: '#444',
+                activeBg: 'transparent',
+                hoverBg: '#444',
+                inactiveBg: 'transparent'
+            };
+        } else {
+            currentPickerColors = {
+                buttonBg: colors.elementBg,
+                menuBg: colors.pageBg,
+                textColor: colors.textColor,
+                borderColor: colors.borderColor,
+                activeBg: 'transparent',
+                hoverBg: hexToRGBA(colors.textColor, 0.22),
+                inactiveBg: 'transparent'
+            };
+        }
+
+        themePickerButton.style.setProperty('background-color', currentPickerColors.buttonBg, 'important');
+        themePickerButton.style.setProperty('color', currentPickerColors.textColor, 'important');
+        themePickerButton.style.setProperty('border-color', currentPickerColors.borderColor, 'important');
+        modeLabel.style.setProperty('background-color', currentPickerColors.buttonBg, 'important');
+        modeLabel.style.setProperty('color', currentPickerColors.textColor, 'important');
+        modeLabel.style.setProperty('border-color', currentPickerColors.borderColor, 'important');
+        themePickerMenu.style.setProperty('background-color', currentPickerColors.menuBg, 'important');
+        themePickerMenu.style.setProperty('border-color', currentPickerColors.borderColor, 'important');
+        editButton.style.setProperty('background-color', themeSelector.value === 'light' ? '#555' : currentPickerColors.buttonBg, 'important');
+        editButton.style.setProperty('color', currentPickerColors.textColor, 'important');
+        editButton.style.setProperty('border-color', themeSelector.value === 'light' ? '#666' : currentPickerColors.borderColor, 'important');
+        controlsToggleButton.style.setProperty('background-color', currentPickerColors.buttonBg, 'important');
+        controlsToggleButton.style.setProperty('color', currentPickerColors.textColor, 'important');
+        controlsToggleButton.style.setProperty('border-color', currentPickerColors.borderColor, 'important');
+        controlsToggleIcon.style.setProperty('background-color', currentPickerColors.textColor, 'important');
+        controlsContainer.style.setProperty('background-color', 'transparent', 'important');
+        controlsContainer.style.setProperty('box-shadow', 'none', 'important');
+        controlsPanel.style.setProperty('background-color', 'transparent', 'important');
+        controlsPanel.style.setProperty('box-shadow', 'none', 'important');
+        colorEditor.style.setProperty('background-color', currentPickerColors.menuBg, 'important');
+        colorEditor.style.setProperty('border-color', currentPickerColors.borderColor, 'important');
+        colorEditor.style.setProperty('color', currentPickerColors.textColor, 'important');
+        colorEditor.querySelectorAll('h3, label').forEach(el => el.style.setProperty('color', currentPickerColors.textColor, 'important'));
+        colorEditor.querySelectorAll('button').forEach(button => {
+            button.style.setProperty('background-color', currentPickerColors.buttonBg, 'important');
+            button.style.setProperty('color', currentPickerColors.textColor, 'important');
+            button.style.setProperty('border-color', currentPickerColors.borderColor, 'important');
+        });
+        colorEditor.querySelectorAll('input[type="color"]').forEach(input => {
+            input.style.setProperty('background-color', currentPickerColors.buttonBg, 'important');
+            input.style.setProperty('border-color', currentPickerColors.borderColor, 'important');
+        });
+    }
+
     let currentTheme = getCookie('theme') || 'light';
     if (!themes.some(t => t.value === currentTheme)) {
         currentTheme = 'light';
         setCookie('theme', currentTheme, 365);
     }
     themeSelector.value = currentTheme;
+    updateThemePicker();
+    applyControlsMenuState(true);
 
     function updateEditButtonState() {
         if (themeSelector.value === 'light') {
@@ -1148,7 +1640,9 @@
         overlayRect.style.backgroundColor = selectedTheme === 'light' ? '' : colors.pageBg;
 
         updateEditButtonState();
+        applyThemePickerColors(colors);
         updateColorEditor();
+        updateThemePicker();
         fixExpanders();
         applyGradients();
         debouncedHighlightTrueFalse();
@@ -1171,12 +1665,16 @@
         const colors = selectedTheme === 'light' ? getDefaultColors(selectedTheme) : customColors[selectedTheme] || getDefaultColors(selectedTheme);
         colorEditor.querySelector('#pageBg').value = colors.pageBg;
         colorEditor.querySelector('#textColor').value = colors.textColor;
-        colorEditor.querySelector('h3').innerText = `Edit Colors for ${themes.find(theme => theme.value === selectedTheme).text}`;
+        const colorEditorTitle = colorEditor.querySelector('h3');
+        if (colorEditorTitle) {
+            colorEditorTitle.innerText = `Edit Colors for ${themes.find(theme => theme.value === selectedTheme).text} Mode`;
+        }
     }
 
     function getDefaultColors(theme) {
         const defaults = {
             light: { pageBg: '#ffffff', textColor: '#000000' },
+        noir: { pageBg: '#121212', textColor: '#ffffff' },
         batman: { pageBg: '#121212', textColor: '#ffeb3b' },
         matrix: { pageBg: '#121212', textColor: '#3DFE3D' },
         terminator: { pageBg: '#121212', textColor: '#ff3535' },
@@ -1210,15 +1708,21 @@
 
     editButton.addEventListener('click', () => {
         if (themeSelector.value === 'light') return;
-        const newDisplay = colorEditor.style.display === 'none' ? 'block' : 'none';
-        colorEditor.style.display = newDisplay;
-        setCookie('colorEditorState', newDisplay, 365);
+        syncColorEditorPosition();
+        if (isFloatingVisible(colorEditor)) {
+            hideFloatingElement(colorEditor);
+            setCookie('colorEditorState', 'none', 365);
+        } else {
+            hideFloatingElement(themePickerMenu);
+            showFloatingElement(colorEditor);
+            setCookie('colorEditorState', 'block', 365);
+        }
         updateColorEditor();
     });
 
     document.addEventListener('click', (event) => {
-        if (colorEditor.style.display === 'block' && !colorEditor.contains(event.target) && !editButton.contains(event.target)) {
-            colorEditor.style.display = 'none';
+        if (isFloatingVisible(colorEditor) && !colorEditor.contains(event.target) && !editButton.contains(event.target)) {
+            hideFloatingElement(colorEditor);
             setCookie('colorEditorState', 'none', 365);
         }
     });
