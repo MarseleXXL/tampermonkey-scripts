@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.04
 // @author       aolenche
-// @description  Adds color themes to FCResearch page
+// @description  Adds color themes to the FCResearch page
 // @match        https://fcresearch-eu.aka.amazon.com/*
 // @match        http://fcresearch-eu.aka.amazon.com/*
 // @match        https://qi-fcresearch-eu.corp.amazon.com/*
@@ -190,7 +190,7 @@
         if (skipTransition) {
             controlsPanel.style.transition = 'none';
         }
-        controlsToggleIcon.style.transform = isControlsMenuHidden ? 'rotate(0deg)' : 'rotate(180deg)';
+        controlsToggleIcon.style.transform = isControlsMenuHidden ? 'rotate(180deg)' : 'rotate(0deg)';
         controlsToggleButton.title = isControlsMenuHidden ? 'Show menu' : 'Hide menu';
         controlsPanel.style.maxWidth = '900px';
         clearTimeout(controlsPanel.darkmodsVisibilityTimer);
