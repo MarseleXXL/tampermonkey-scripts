@@ -1,9 +1,8 @@
 // ==UserScript==
 // @name         Dark mods FCresearch
 // @namespace    http://tampermonkey.net/
-// @version      1.04
+// @version      1.05
 // @author       aolenche
-// @description  Adds color themes to the FCResearch page
 // @match        https://fcresearch-eu.aka.amazon.com/*
 // @match        http://fcresearch-eu.aka.amazon.com/*
 // @match        https://qi-fcresearch-eu.corp.amazon.com/*
@@ -1254,6 +1253,30 @@
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.125)}, ${hexToRGBA(colors.textColor, 0.125)}), ${colors.pageBg} !important;
                     background-color: ${colors.pageBg} !important;
                 }
+                #table-purchase-order tbody tr.odd td:not(.highlight-true):not(.highlight-false),
+                #table-purchase-order-item tbody tr.odd td:not(.highlight-true):not(.highlight-false) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.04)}, ${hexToRGBA(colors.textColor, 0.04)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                }
+                #table-purchase-order tbody tr.even td:not(.highlight-true):not(.highlight-false),
+                #table-purchase-order-item tbody tr.even td:not(.highlight-true):not(.highlight-false) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.085)}, ${hexToRGBA(colors.textColor, 0.085)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                }
+                #table-purchase-order tbody tr:hover td:not(.highlight-true):not(.highlight-false),
+                #table-purchase-order-item tbody tr:hover td:not(.highlight-true):not(.highlight-false) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.125)}, ${hexToRGBA(colors.textColor, 0.125)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                }
+                #table-purchase-order tbody tr.odd td:not(.highlight-true):not(.highlight-false) *,
+                #table-purchase-order-item tbody tr.odd td:not(.highlight-true):not(.highlight-false) *,
+                #table-purchase-order tbody tr.even td:not(.highlight-true):not(.highlight-false) *,
+                #table-purchase-order-item tbody tr.even td:not(.highlight-true):not(.highlight-false) *,
+                #table-purchase-order tbody tr:hover td:not(.highlight-true):not(.highlight-false) *,
+                #table-purchase-order-item tbody tr:hover td:not(.highlight-true):not(.highlight-false) * {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                }
                 [data-section-type="product"] table.a-keyvalue tbody tr:nth-child(odd) th,
                 [data-section-type="product"] table.a-keyvalue tbody tr:nth-child(odd) td:not(.highlight-true):not(.highlight-false) {
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.04)}, ${hexToRGBA(colors.textColor, 0.04)}), ${colors.pageBg} !important;
@@ -1314,11 +1337,383 @@
                 ul.a-list-link li:not(:has(a[href])) {
                     color: ${colors.inactiveColor} !important;
                 }
-                .a-cal-date-anchor[aria-disabled="false"] {
+                .a-cal-calendar-container,
+                .a-cal-calendar-container *,
+                .a-cal-in-popover,
+                .a-cal-month-container,
+                .a-cal-month-row,
+                .a-cal-month-table,
+                .ui-datepicker,
+                .ui-datepicker * {
+                    border-color: ${colors.borderColor} !important;
+                }
+                .a-cal-calendar-container,
+                .a-cal-in-popover,
+                .a-cal-month-container,
+                .a-cal-month-row,
+                .a-cal-month-table,
+                .a-cal-month-table tbody,
+                .a-cal-month-table tr,
+                .a-cal-days,
+                .a-cal-days tr,
+                .ui-datepicker,
+                .ui-datepicker-header,
+                .ui-datepicker-calendar,
+                .ui-datepicker-calendar tbody,
+                .ui-datepicker-calendar tr {
+                    background: ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    color: ${colors.textColor} !important;
+                }
+                .a-cal-month-header,
+                .ui-datepicker-title,
+                .ui-datepicker-month,
+                .ui-datepicker-year {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                    color: ${colors.textColor} !important;
+                }
+                .a-cal-paginate-prev,
+                .a-cal-paginate-next,
+                .ui-datepicker-prev,
+                .ui-datepicker-next {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                    color: ${colors.textColor} !important;
+                    opacity: 1 !important;
+                    filter: none !important;
+                    border: none !important;
+                    box-shadow: none !important;
+                }
+                .a-cal-paginate-prev .a-icon-previous,
+                .ui-datepicker-prev .ui-icon {
+                    background-image: none !important;
+                    background-color: ${colors.textColor} !important;
+                    width: 16px !important;
+                    height: 16px !important;
+                    opacity: 1 !important;
+                    filter: drop-shadow(0 0 3px ${hexToRGBA(colors.textColor, 0.35)}) !important;
+                    border: none !important;
+                    outline: none !important;
+                    box-shadow: none !important;
+                    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M15.45 4.35a1.25 1.25 0 0 1 0 1.77L9.57 12l5.88 5.88a1.25 1.25 0 1 1-1.77 1.77l-6.8-6.8a1.2 1.2 0 0 1 0-1.7l6.8-6.8a1.25 1.25 0 0 1 1.77 0Z'/%3E%3C/svg%3E") !important;
+                    -webkit-mask-repeat: no-repeat !important;
+                    -webkit-mask-position: center !important;
+                    -webkit-mask-size: 16px 16px !important;
+                    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M15.45 4.35a1.25 1.25 0 0 1 0 1.77L9.57 12l5.88 5.88a1.25 1.25 0 1 1-1.77 1.77l-6.8-6.8a1.2 1.2 0 0 1 0-1.7l6.8-6.8a1.25 1.25 0 0 1 1.77 0Z'/%3E%3C/svg%3E") !important;
+                    mask-repeat: no-repeat !important;
+                    mask-position: center !important;
+                    mask-size: 16px 16px !important;
+                }
+                .a-cal-paginate-next .a-icon-next,
+                .ui-datepicker-next .ui-icon {
+                    background-image: none !important;
+                    background-color: ${colors.textColor} !important;
+                    width: 16px !important;
+                    height: 16px !important;
+                    opacity: 1 !important;
+                    filter: drop-shadow(0 0 3px ${hexToRGBA(colors.textColor, 0.35)}) !important;
+                    border: none !important;
+                    outline: none !important;
+                    box-shadow: none !important;
+                    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M8.55 4.35a1.25 1.25 0 0 1 1.77 0l6.8 6.8a1.2 1.2 0 0 1 0 1.7l-6.8 6.8a1.25 1.25 0 0 1-1.77-1.77L14.43 12 8.55 6.12a1.25 1.25 0 0 1 0-1.77Z'/%3E%3C/svg%3E") !important;
+                    -webkit-mask-repeat: no-repeat !important;
+                    -webkit-mask-position: center !important;
+                    -webkit-mask-size: 16px 16px !important;
+                    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M8.55 4.35a1.25 1.25 0 0 1 1.77 0l6.8 6.8a1.2 1.2 0 0 1 0 1.7l-6.8 6.8a1.25 1.25 0 0 1-1.77-1.77L14.43 12 8.55 6.12a1.25 1.25 0 0 1 0-1.77Z'/%3E%3C/svg%3E") !important;
+                    mask-repeat: no-repeat !important;
+                    mask-position: center !important;
+                    mask-size: 16px 16px !important;
+                }
+                .a-cal-paginate-prev:hover .a-icon-previous,
+                .a-cal-paginate-next:hover .a-icon-next,
+                .ui-datepicker-prev:hover .ui-icon,
+                .ui-datepicker-next:hover .ui-icon {
+                    filter: drop-shadow(0 0 6px ${hexToRGBA(colors.textColor, 0.65)}) !important;
+                }
+                .a-cal-labels,
+                .a-cal-labels tr,
+                .a-cal-labels th,
+                .a-cal-labels th span,
+                .a-cal-day-label,
+                .a-cal-in-popover .a-cal-labels th:first-child::after,
+                .a-cal-in-popover .a-cal-labels th:last-child::after,
+                .ui-datepicker-calendar thead,
+                .ui-datepicker-calendar thead tr,
+                .ui-datepicker-calendar th,
+                .ui-datepicker-calendar th span {
+                    background: ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    color: ${colors.textColor} !important;
+                    border-color: ${colors.borderColor} !important;
+                }
+                .a-cal-month-table td,
+                .ui-datepicker-calendar td {
+                    border-color: transparent !important;
+                    color: ${colors.textColor} !important;
+                }
+                .a-cal-days tr td,
+                .ui-datepicker-calendar tbody tr td {
+                    border: none !important;
+                    border-radius: 4px !important;
+                    background-clip: padding-box !important;
+                    box-shadow: none !important;
+                    outline: none !important;
+                }
+                .a-cal-days tr td.a-cal-d:nth-child(odd),
+                .ui-datepicker-calendar tbody tr td:nth-child(odd):not(.ui-state-disabled) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.045)}, ${hexToRGBA(colors.textColor, 0.045)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                }
+                .a-cal-days tr td.a-cal-d:nth-child(even),
+                .ui-datepicker-calendar tbody tr td:nth-child(even):not(.ui-state-disabled) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.085)}, ${hexToRGBA(colors.textColor, 0.085)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                }
+                .a-cal-days tr td.a-cal-d:hover,
+                .ui-datepicker-calendar tbody tr td:hover:not(.ui-state-disabled) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.135)}, ${hexToRGBA(colors.textColor, 0.135)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                }
+                .a-cal-days tr td.a-cal-na,
+                .a-cal-days tr td.a-cal-outbound,
+                .a-cal-days tr td.a-cal-inactive,
+                .a-cal-days tr td.a-cal-na *,
+                .a-cal-days tr td.a-cal-outbound *,
+                .a-cal-days tr td.a-cal-inactive *,
+                .ui-datepicker-calendar tbody tr td.ui-state-disabled,
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-other-month,
+                .ui-datepicker-calendar tbody tr td.ui-state-disabled *,
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-other-month * {
+                    background: ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    color: ${colors.textColor} !important;
+                }
+                .a-cal-date-anchor,
+                .a-cal-date-anchor[aria-disabled="false"],
+                .ui-datepicker-calendar a,
+                .ui-datepicker-calendar .ui-state-default {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                    color: ${colors.textColor} !important;
+                    border-color: transparent !important;
+                    box-shadow: none !important;
+                    display: block !important;
+                    border-radius: 4px !important;
+                }
+                .a-cal-date-anchor:hover,
+                .ui-datepicker-calendar a:hover,
+                .ui-datepicker-calendar .ui-state-default:hover {
+                    background-color: ${hexToRGBA(colors.textColor, 0.16)} !important;
                     color: ${colors.textColor} !important;
                 }
                 .a-cal-date-anchor[aria-disabled="true"] {
                     color: ${colors.inactiveColor} !important;
+                }
+                .a-cal-days tr td.a-cal-d.a-cal-inbound > .a-cal-date-anchor[aria-disabled="false"],
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a,
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month) > .ui-state-default {
+                    border: 1px solid ${hexToRGBA(colors.textColor, 0.18)} !important;
+                    box-shadow: inset 0 0 0 1px ${hexToRGBA(colors.textColor, 0.10)} !important;
+                    border-radius: 4px !important;
+                    box-sizing: border-box !important;
+                    background-clip: padding-box !important;
+                }
+                .a-cal-days tr td.a-cal-d.a-cal-inbound:hover > .a-cal-date-anchor[aria-disabled="false"],
+                .ui-datepicker-calendar tbody tr td:hover:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a,
+                .ui-datepicker-calendar tbody tr td:hover:not(.ui-state-disabled):not(.ui-datepicker-other-month) > .ui-state-default {
+                    border-color: ${hexToRGBA(colors.textColor, 0.38)} !important;
+                    box-shadow: inset 0 0 0 1px ${hexToRGBA(colors.textColor, 0.25)}, 0 0 8px ${hexToRGBA(colors.textColor, 0.14)} !important;
+                    background: ${hexToRGBA(colors.textColor, 0.16)} !important;
+                    background-color: ${hexToRGBA(colors.textColor, 0.16)} !important;
+                }
+                .a-cal-days tr td.a-cal-select > .a-cal-date-anchor[aria-disabled="false"],
+                .a-cal-days tr td.a-cal-select:hover > .a-cal-date-anchor[aria-disabled="false"] {
+                    border-color: ${hexToRGBA(colors.textColor, 0.46)} !important;
+                    box-shadow: inset 0 0 0 2px ${hexToRGBA(colors.textColor, 0.28)} !important;
+                }
+                .a-cal-days tr td.a-cal-na,
+                .a-cal-days tr td.a-cal-outbound,
+                .a-cal-days tr td.a-cal-inactive,
+                .ui-datepicker-calendar tbody tr td.ui-state-disabled,
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-other-month {
+                    border: none !important;
+                    box-shadow: none !important;
+                    outline: none !important;
+                }
+                .a-cal-days tr td.a-cal-na *,
+                .a-cal-days tr td.a-cal-outbound *,
+                .a-cal-days tr td.a-cal-inactive *,
+                .ui-datepicker-calendar tbody tr td.ui-state-disabled *,
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-other-month * {
+                    border: none !important;
+                    box-shadow: none !important;
+                    outline: none !important;
+                }
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive),
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month) {
+                    background: ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    border: none !important;
+                    box-shadow: none !important;
+                    outline: none !important;
+                }
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor:not([aria-disabled="true"]),
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a,
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month) > .ui-state-default {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                    color: ${colors.textColor} !important;
+                    border: none !important;
+                    box-shadow: inset 0 0 0 1px ${hexToRGBA(colors.textColor, 0.22)} !important;
+                    outline: none !important;
+                    border-radius: 4px !important;
+                    box-sizing: border-box !important;
+                    background-clip: padding-box !important;
+                    display: block !important;
+                    width: 100% !important;
+                    height: 100% !important;
+                }
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive):hover,
+                .ui-datepicker-calendar tbody tr td:hover:not(.ui-state-disabled):not(.ui-datepicker-other-month) {
+                    background: ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    box-shadow: none !important;
+                }
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive):hover > .a-cal-date-anchor:not([aria-disabled="true"]),
+                .ui-datepicker-calendar tbody tr td:hover:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a,
+                .ui-datepicker-calendar tbody tr td:hover:not(.ui-state-disabled):not(.ui-datepicker-other-month) > .ui-state-default {
+                    background: ${hexToRGBA(colors.textColor, 0.16)} !important;
+                    background-color: ${hexToRGBA(colors.textColor, 0.16)} !important;
+                    color: ${colors.textColor} !important;
+                    box-shadow: inset 0 0 0 1px ${hexToRGBA(colors.textColor, 0.42)}, 0 0 8px ${hexToRGBA(colors.textColor, 0.14)} !important;
+                }
+                .a-cal-days tr td.a-cal-na,
+                .a-cal-days tr td.a-cal-outbound,
+                .a-cal-days tr td.a-cal-inactive,
+                .ui-datepicker-calendar tbody tr td.ui-state-disabled,
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-other-month {
+                    background: ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    color: ${colors.textColor} !important;
+                    border: none !important;
+                    box-shadow: none !important;
+                    outline: none !important;
+                }
+                .a-cal-days tr td.a-cal-na *,
+                .a-cal-days tr td.a-cal-outbound *,
+                .a-cal-days tr td.a-cal-inactive *,
+                .ui-datepicker-calendar tbody tr td.ui-state-disabled *,
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-other-month * {
+                    border: none !important;
+                    box-shadow: none !important;
+                    outline: none !important;
+                    color: ${colors.inactiveColor} !important;
+                }
+                .a-cal-days tr td.a-cal-select:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor,
+                .a-cal-days tr td.a-cal-select:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > a,
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor[aria-current="true"],
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-current-day:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a,
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a.ui-state-active,
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month) > .ui-state-default.ui-state-active {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.24)}, ${hexToRGBA(colors.textColor, 0.24)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    color: ${colors.textColor} !important;
+                    border: none !important;
+                    box-shadow: inset 0 0 0 2px ${hexToRGBA(colors.textColor, 0.58)}, 0 0 9px ${hexToRGBA(colors.textColor, 0.18)} !important;
+                    outline: none !important;
+                    border-radius: 4px !important;
+                }
+                .a-cal-days tr td.a-cal-select:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive):hover > .a-cal-date-anchor,
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive):hover > .a-cal-date-anchor[aria-current="true"],
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-current-day:hover:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a,
+                .ui-datepicker-calendar tbody tr td:hover:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a.ui-state-active,
+                .ui-datepicker-calendar tbody tr td:hover:not(.ui-state-disabled):not(.ui-datepicker-other-month) > .ui-state-default.ui-state-active {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.30)}, ${hexToRGBA(colors.textColor, 0.30)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    color: ${colors.textColor} !important;
+                    box-shadow: inset 0 0 0 2px ${hexToRGBA(colors.textColor, 0.72)}, 0 0 11px ${hexToRGBA(colors.textColor, 0.24)} !important;
+                }
+                .a-cal-calendar-container,
+                .a-cal-in-popover,
+                .a-cal-month-container,
+                .a-cal-month-row,
+                .a-cal-month-table,
+                .a-cal-month-table tbody,
+                .a-cal-month-table tr,
+                .a-cal-days,
+                .a-cal-days tr,
+                .ui-datepicker,
+                .ui-datepicker-header,
+                .ui-datepicker-calendar,
+                .ui-datepicker-calendar tbody,
+                .ui-datepicker-calendar tr {
+                    background: ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                }
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive),
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive):nth-child(odd),
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive):nth-child(even),
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month),
+                .ui-datepicker-calendar tbody tr td:nth-child(odd):not(.ui-state-disabled):not(.ui-datepicker-other-month),
+                .ui-datepicker-calendar tbody tr td:nth-child(even):not(.ui-state-disabled):not(.ui-datepicker-other-month) {
+                    background: ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    color: ${colors.textColor} !important;
+                }
+                .a-cal-days tr td.a-cal-na,
+                .a-cal-days tr td.a-cal-outbound,
+                .a-cal-days tr td.a-cal-inactive,
+                .ui-datepicker-calendar tbody tr td.ui-state-disabled,
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-other-month {
+                    background: ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    color: ${colors.textColor} !important;
+                    box-shadow: none !important;
+                    outline: none !important;
+                }
+                .a-cal-days tr td.a-cal-select:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive),
+                .a-cal-days tr td.a-cal-d.a-cal-select:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive),
+                .a-cal-days tr td.a-cal-d[aria-selected="true"]:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive),
+                .a-cal-days tr td.a-cal-d[aria-current="true"]:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive),
+                .a-cal-days tr td.a-cal-d[aria-current="date"]:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive),
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-current-day:not(.ui-state-disabled):not(.ui-datepicker-other-month),
+                .ui-datepicker-calendar tbody tr td:has(> a.ui-state-active):not(.ui-state-disabled):not(.ui-datepicker-other-month),
+                .ui-datepicker-calendar tbody tr td:has(> .ui-state-default.ui-state-active):not(.ui-state-disabled):not(.ui-datepicker-other-month) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.18)}, ${hexToRGBA(colors.textColor, 0.18)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    color: ${colors.textColor} !important;
+                    box-shadow: inset 0 0 0 2px ${hexToRGBA(colors.textColor, 0.72)}, 0 0 10px ${hexToRGBA(colors.textColor, 0.20)} !important;
+                    outline: none !important;
+                    border-radius: 4px !important;
+                }
+                .a-cal-days tr td.a-cal-select:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor,
+                .a-cal-days tr td.a-cal-select:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > a,
+                .a-cal-days tr td.a-cal-d[aria-selected="true"]:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor,
+                .a-cal-days tr td.a-cal-d[aria-current="true"]:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor,
+                .a-cal-days tr td.a-cal-d[aria-current="date"]:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor,
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor[aria-selected="true"],
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor[aria-current="true"],
+                .a-cal-days tr td.a-cal-d:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive) > .a-cal-date-anchor[aria-current="date"],
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-current-day:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a,
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month) > a.ui-state-active,
+                .ui-datepicker-calendar tbody tr td:not(.ui-state-disabled):not(.ui-datepicker-other-month) > .ui-state-default.ui-state-active {
+                    background: transparent !important;
+                    background-color: transparent !important;
+                    color: ${colors.textColor} !important;
+                    font-weight: 700 !important;
+                    box-shadow: inset 0 0 0 2px ${hexToRGBA(colors.textColor, 0.72)}, 0 0 10px ${hexToRGBA(colors.textColor, 0.20)} !important;
+                    outline: none !important;
+                    border: none !important;
+                    border-radius: 4px !important;
+                }
+                .a-cal-days tr td.a-cal-select:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive):hover,
+                .a-cal-days tr td.a-cal-d.a-cal-select:not(.a-cal-na):not(.a-cal-outbound):not(.a-cal-inactive):hover,
+                .ui-datepicker-calendar tbody tr td.ui-datepicker-current-day:hover:not(.ui-state-disabled):not(.ui-datepicker-other-month),
+                .ui-datepicker-calendar tbody tr td:has(> a.ui-state-active):hover:not(.ui-state-disabled):not(.ui-datepicker-other-month) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.24)}, ${hexToRGBA(colors.textColor, 0.24)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                    box-shadow: inset 0 0 0 2px ${hexToRGBA(colors.textColor, 0.86)}, 0 0 12px ${hexToRGBA(colors.textColor, 0.28)} !important;
                 }
                 ::selection {
                     background: ${hexToRGBA(colors.selectionBgColor, 0.3)} !important;
