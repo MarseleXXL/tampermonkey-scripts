@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dark mods FCresearch
 // @namespace    http://tampermonkey.net/
-// @version      1.05
+// @version      1.06
 // @author       aolenche
 // @match        https://fcresearch-eu.aka.amazon.com/*
 // @match        http://fcresearch-eu.aka.amazon.com/*
@@ -16,7 +16,6 @@
 // @grant        none
 // ==/UserScript==
 // ==/UserScript==
-
 (function() {
     'use strict';
 
@@ -1235,45 +1234,21 @@
                     z-index: 1 !important;
                     white-space: nowrap !important;
                 }
-                #table-inventory tbody tr.odd td:not(.highlight-true):not(.highlight-false),
-                #table-inventory-history tbody tr.odd td:not(.highlight-true):not(.highlight-false),
-                #table-container-history tbody tr.odd td:not(.highlight-true):not(.highlight-false) {
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr.odd td:not(.highlight-true):not(.highlight-false) {
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.04)}, ${hexToRGBA(colors.textColor, 0.04)}), ${colors.pageBg} !important;
                     background-color: ${colors.pageBg} !important;
                 }
-                #table-inventory tbody tr.even td:not(.highlight-true):not(.highlight-false),
-                #table-inventory-history tbody tr.even td:not(.highlight-true):not(.highlight-false),
-                #table-container-history tbody tr.even td:not(.highlight-true):not(.highlight-false) {
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr.even td:not(.highlight-true):not(.highlight-false) {
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.085)}, ${hexToRGBA(colors.textColor, 0.085)}), ${colors.pageBg} !important;
                     background-color: ${colors.pageBg} !important;
                 }
-                #table-inventory tbody tr:hover td:not(.highlight-true):not(.highlight-false),
-                #table-inventory-history tbody tr:hover td:not(.highlight-true):not(.highlight-false),
-                #table-container-history tbody tr:hover td:not(.highlight-true):not(.highlight-false) {
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr:hover td:not(.highlight-true):not(.highlight-false) {
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.125)}, ${hexToRGBA(colors.textColor, 0.125)}), ${colors.pageBg} !important;
                     background-color: ${colors.pageBg} !important;
                 }
-                #table-purchase-order tbody tr.odd td:not(.highlight-true):not(.highlight-false),
-                #table-purchase-order-item tbody tr.odd td:not(.highlight-true):not(.highlight-false) {
-                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.04)}, ${hexToRGBA(colors.textColor, 0.04)}), ${colors.pageBg} !important;
-                    background-color: ${colors.pageBg} !important;
-                }
-                #table-purchase-order tbody tr.even td:not(.highlight-true):not(.highlight-false),
-                #table-purchase-order-item tbody tr.even td:not(.highlight-true):not(.highlight-false) {
-                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.085)}, ${hexToRGBA(colors.textColor, 0.085)}), ${colors.pageBg} !important;
-                    background-color: ${colors.pageBg} !important;
-                }
-                #table-purchase-order tbody tr:hover td:not(.highlight-true):not(.highlight-false),
-                #table-purchase-order-item tbody tr:hover td:not(.highlight-true):not(.highlight-false) {
-                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.125)}, ${hexToRGBA(colors.textColor, 0.125)}), ${colors.pageBg} !important;
-                    background-color: ${colors.pageBg} !important;
-                }
-                #table-purchase-order tbody tr.odd td:not(.highlight-true):not(.highlight-false) *,
-                #table-purchase-order-item tbody tr.odd td:not(.highlight-true):not(.highlight-false) *,
-                #table-purchase-order tbody tr.even td:not(.highlight-true):not(.highlight-false) *,
-                #table-purchase-order-item tbody tr.even td:not(.highlight-true):not(.highlight-false) *,
-                #table-purchase-order tbody tr:hover td:not(.highlight-true):not(.highlight-false) *,
-                #table-purchase-order-item tbody tr:hover td:not(.highlight-true):not(.highlight-false) * {
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr.odd td:not(.highlight-true):not(.highlight-false) *,
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr.even td:not(.highlight-true):not(.highlight-false) *,
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr:hover td:not(.highlight-true):not(.highlight-false) * {
                     background: transparent !important;
                     background-color: transparent !important;
                 }
@@ -1292,15 +1267,6 @@
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.125)}, ${hexToRGBA(colors.textColor, 0.125)}), ${colors.pageBg} !important;
                     background-color: ${colors.pageBg} !important;
                 }
-                #table-inventory tbody tr.odd td:not(.highlight-true):not(.highlight-false) *,
-                #table-inventory-history tbody tr.odd td:not(.highlight-true):not(.highlight-false) *,
-                #table-container-history tbody tr.odd td:not(.highlight-true):not(.highlight-false) *,
-                #table-inventory tbody tr.even td:not(.highlight-true):not(.highlight-false) *,
-                #table-inventory-history tbody tr.even td:not(.highlight-true):not(.highlight-false) *,
-                #table-container-history tbody tr.even td:not(.highlight-true):not(.highlight-false) *,
-                #table-inventory tbody tr:hover td:not(.highlight-true):not(.highlight-false) *,
-                #table-inventory-history tbody tr:hover td:not(.highlight-true):not(.highlight-false) *,
-                #table-container-history tbody tr:hover td:not(.highlight-true):not(.highlight-false) *,
                 [data-section-type="product"] table.a-keyvalue tbody tr:nth-child(odd) th *,
                 [data-section-type="product"] table.a-keyvalue tbody tr:nth-child(odd) td:not(.highlight-true):not(.highlight-false) *,
                 [data-section-type="product"] table.a-keyvalue tbody tr:nth-child(even) th *,
@@ -1310,31 +1276,45 @@
                     background: transparent !important;
                     background-color: transparent !important;
                 }
-                ul.a-list-link li:has(a[href]) {
-                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.085)}, ${hexToRGBA(colors.textColor, 0.085)}), ${colors.pageBg} !important;
-                    background-color: ${colors.pageBg} !important;
+                [data-section-type="product"] table.a-keyvalue tbody td:not(.highlight-true):not(.highlight-false) {
+                    padding-inline-start: 1rem !important;
+                }
+                #sections-list > li {
+                    position: relative !important;
+                    padding: 2px 0 !important;
                     border-radius: 4px !important;
                     margin: 1px 0 !important;
+                    box-sizing: border-box !important;
                 }
-                ul.a-list-link li:has(a[href]) a[href] {
+                #sections-list > li:has(> a[href]) {
+                    background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.085)}, ${hexToRGBA(colors.textColor, 0.085)}), ${colors.pageBg} !important;
+                    background-color: ${colors.pageBg} !important;
+                }
+                #sections-list > li a[href] {
                     background: transparent !important;
                     background-color: transparent !important;
                     color: ${colors.linkColor} !important;
-                    display: block !important;
                     border-radius: 4px !important;
-                    padding: 2px 6px !important;
+                    padding: 0 !important;
                 }
-                ul.a-list-link li:has(a[href]):hover {
+                #sections-list > li > a[href] {
+                    display: block !important;
+                }
+                #sections-list > li > a[href]:empty,
+                #sections-list > li a[href] > a[href]:empty {
+                    display: none !important;
+                }
+                #sections-list > li:has(> a[href]):hover {
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.125)}, ${hexToRGBA(colors.textColor, 0.125)}), ${colors.pageBg} !important;
                     background-color: ${colors.pageBg} !important;
                 }
-                ul.a-list-link li:has(a[href]):hover a[href] {
+                #sections-list > li:has(> a[href]):hover a[href] {
                     color: ${colors.linkHoverColor} !important;
                 }
-                ul.a-list-link li a:not([href]) {
+                #sections-list > li a:not([href]) {
                     color: ${colors.inactiveColor} !important;
                 }
-                ul.a-list-link li:not(:has(a[href])) {
+                #sections-list > li:not(:has(> a[href])) {
                     color: ${colors.inactiveColor} !important;
                 }
                 .a-cal-calendar-container,
@@ -1807,24 +1787,16 @@
                     background: transparent !important;
                     background-color: transparent !important;
                 }
-                #table-inventory tbody tr.odd td.highlight-true,
-                #table-inventory tbody tr.odd td.highlight-false,
-                #table-inventory-history tbody tr.odd td.highlight-true,
-                #table-inventory-history tbody tr.odd td.highlight-false,
-                #table-container-history tbody tr.odd td.highlight-true,
-                #table-container-history tbody tr.odd td.highlight-false,
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr.odd td.highlight-true,
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr.odd td.highlight-false,
                 [data-section-type="product"] table.a-keyvalue tbody tr:nth-child(odd) td.highlight-true,
                 [data-section-type="product"] table.a-keyvalue tbody tr:nth-child(odd) td.highlight-false {
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.04)}, ${hexToRGBA(colors.textColor, 0.04)}), ${colors.pageBg} !important;
                     background-color: ${colors.pageBg} !important;
                     background-clip: padding-box !important;
                 }
-                #table-inventory tbody tr.even td.highlight-true,
-                #table-inventory tbody tr.even td.highlight-false,
-                #table-inventory-history tbody tr.even td.highlight-true,
-                #table-inventory-history tbody tr.even td.highlight-false,
-                #table-container-history tbody tr.even td.highlight-true,
-                #table-container-history tbody tr.even td.highlight-false,
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr.even td.highlight-true,
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr.even td.highlight-false,
                 [data-section-type="product"] table.a-keyvalue tbody tr:nth-child(even) td.highlight-true,
                 [data-section-type="product"] table.a-keyvalue tbody tr:nth-child(even) td.highlight-false {
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.085)}, ${hexToRGBA(colors.textColor, 0.085)}), ${colors.pageBg} !important;
@@ -1845,12 +1817,8 @@
                     background-color: #ff4040 !important;
                     color: #000000 !important;
                 }
-                #table-inventory tbody tr:hover td.highlight-true,
-                #table-inventory tbody tr:hover td.highlight-false,
-                #table-inventory-history tbody tr:hover td.highlight-true,
-                #table-inventory-history tbody tr:hover td.highlight-false,
-                #table-container-history tbody tr:hover td.highlight-true,
-                #table-container-history tbody tr:hover td.highlight-false,
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr:hover td.highlight-true,
+                table.a-bordered.a-horizontal-stripes.dataTable tbody tr:hover td.highlight-false,
                 [data-section-type="product"] table.a-keyvalue tbody tr:hover td.highlight-true,
                 [data-section-type="product"] table.a-keyvalue tbody tr:hover td.highlight-false {
                     background: linear-gradient(0deg, ${hexToRGBA(colors.textColor, 0.125)}, ${hexToRGBA(colors.textColor, 0.125)}), ${colors.pageBg} !important;
@@ -1881,7 +1849,8 @@
                     scrollbar-color: ${averageScrollColor} ${colors.pageBg};
                     scrollbar-width: thin;
                 }
-            `;
+            
+`;
         }
 
         return `
@@ -2230,6 +2199,48 @@
         debounceTimeout = setTimeout(highlightTrueFalse, 50);
     }
 
+    function hasDirectSectionNavigationLabel(anchor) {
+        const hasText = Array.from(anchor.childNodes).some(node =>
+            node.nodeType === 3 && node.textContent.trim()
+        );
+        const hasStatusIcon = Array.from(anchor.children).some(child =>
+            child.classList && child.classList.contains('s-icon-status')
+        );
+        return hasText || hasStatusIcon;
+    }
+
+    function normalizeSectionNavigation() {
+        const list = document.querySelector('#sections-list');
+        if (!list) {
+            return;
+        }
+
+        Array.from(list.children).forEach(item => {
+            if (item.tagName !== 'LI') {
+                return;
+            }
+
+            const anchors = Array.from(item.querySelectorAll('a[href]'));
+            if (anchors.length < 2) {
+                return;
+            }
+
+            const labeledAnchor = anchors
+                .slice()
+                .reverse()
+                .find(hasDirectSectionNavigationLabel);
+            if (!labeledAnchor) {
+                return;
+            }
+
+            const replacement = labeledAnchor.cloneNode(true);
+            replacement.querySelectorAll('a[href]').forEach(nestedAnchor => {
+                nestedAnchor.replaceWith(...nestedAnchor.childNodes);
+            });
+            item.replaceChildren(replacement);
+        });
+    }
+
     function fixExpanders() {
         document.querySelectorAll('.a-expander-header, .sidebar-expander-header, .a-link-section-expander').forEach(expander => {
             if (!expander.dataset.expanderFixed) {
@@ -2248,13 +2259,13 @@
             }
         });
     }
-
     function initialize() {
         applyTheme();
         setupInputFocusListeners();
         highlightTrueFalse();
         debouncedHighlightTrueFalse();
         setTimeout(debouncedHighlightTrueFalse, 1000);
+        normalizeSectionNavigation();
         fixExpanders();
         applyGradients();
         updateControlsPosition();
@@ -2266,6 +2277,9 @@
 
         if (document.querySelector('table.a-keyvalue, table[class*="keyvalue"]')) {
             debouncedHighlightTrueFalse();
+        }
+        if (document.querySelector('#sections-list')) {
+            normalizeSectionNavigation();
         }
 
         clearTimeout(dynamicContentTimeout);
