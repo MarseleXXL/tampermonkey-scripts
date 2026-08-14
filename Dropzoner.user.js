@@ -1798,8 +1798,8 @@
     function createScanHistoryContainerCopyButton(containerId) {
         var button = document.createElement('button');
         var normalizedContainerId = trimText(containerId);
-        var copyIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"></path></svg>';
-        var copiedIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7"></path></svg>';
+        var copyIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"></path></svg>';
+        var copiedIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7"></path></svg>';
         button.type = 'button';
         button.className = 'aft-scan-history-container-link aft-scan-history-container-copy';
         button.title = 'Kopiuj kontener';
@@ -5388,21 +5388,21 @@ html.aft-scan-history-fullscreen #aft-scan-buttons-panel {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
+  gap: 3px;
 }
 .aft-scan-history-container-link {
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   padding: 0 !important;
   border: 1px solid var(--aft-light-border, #D4CCC2) !important;
-  border-radius: 4px;
+  border-radius: 5px;
   box-sizing: border-box;
   background: var(--aft-light-surface-raised, #FCFAF6) !important;
   color: var(--aft-light-icon, #3E4247) !important;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
   line-height: 1;
   cursor: pointer;
@@ -5414,24 +5414,18 @@ html.aft-scan-history-fullscreen #aft-scan-buttons-panel {
   background: var(--aft-light-surface-hover, #E6E0D8) !important;
   color: var(--aft-light-icon, #3E4247) !important;
 }
-.aft-scan-history-container-copy-confirmed,
-.aft-scan-history-container-copy-confirmed:hover,
-.aft-scan-history-container-copy-confirmed:focus-visible {
-  border-color: #E07B5B !important;
-  background: #E07B5B !important;
-  color: #FFFFFF !important;
-  animation: aft-scan-history-copy-confirmed 900ms cubic-bezier(0.2, 0.82, 0.24, 1);
+.aft-scan-history-container-copy-confirmed svg path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: aft-scan-history-copy-check 900ms ease-out forwards;
 }
-@keyframes aft-scan-history-copy-confirmed {
-  0%, 100% { transform: scale(1); }
-  24% { transform: scale(1.3) rotate(-7deg); }
-  48% { transform: scale(0.92) rotate(3deg); }
-  70% { transform: scale(1.08) rotate(0); }
+@keyframes aft-scan-history-copy-check {
+  0% { stroke-dashoffset: 24; }
+  42%, 100% { stroke-dashoffset: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .aft-scan-history-container-copy-confirmed,
-  .aft-scan-history-container-copy-confirmed:hover,
-  .aft-scan-history-container-copy-confirmed:focus-visible {
+  .aft-scan-history-container-copy-confirmed svg path {
+    stroke-dashoffset: 0;
     animation: none;
   }
 }
@@ -5513,13 +5507,6 @@ html.aft-auto-dropzone-dark #aft-scan-buttons-panel .aft-scan-history-container-
   border-color: #465564 !important;
   background: #18202A !important;
   color: #EFF4F8 !important;
-}
-html.aft-auto-dropzone-dark #aft-scan-buttons-panel .aft-scan-history-container-copy-confirmed,
-html.aft-auto-dropzone-dark #aft-scan-buttons-panel .aft-scan-history-container-copy-confirmed:hover,
-html.aft-auto-dropzone-dark #aft-scan-buttons-panel .aft-scan-history-container-copy-confirmed:focus-visible {
-  border-color: #E07B5B !important;
-  background: #E07B5B !important;
-  color: #FFFFFF !important;
 }
 html.aft-auto-dropzone-dark #aft-scan-buttons-panel .aft-scan-history-count {
   background: transparent !important;
