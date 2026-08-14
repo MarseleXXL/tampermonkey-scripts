@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dropzoner
 // @namespace    aft-move-container-auto-tools-age
-// @version      1.00
+// @version      1.01
 // @author       aolenche
 // @description  Twórz własną listę Drop-Zon i porządkuj je według grup. Sprawdzaj wiek oraz ilość towaru w kontenerach. Przeglądaj historię skanowań.
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Dropzoner.png
@@ -1831,6 +1831,22 @@
         return button;
     }
 
+    function createScanHistoryContainerDataMatrixButton(containerId) {
+        var button = document.createElement('button');
+        var normalizedContainerId = trimText(containerId);
+        button.type = 'button';
+        button.className = 'aft-scan-history-container-link aft-scan-history-container-datamatrix';
+        button.title = 'Poka\u017c kod DataMatrix';
+        button.setAttribute('aria-label', 'Poka\u017c kod DataMatrix');
+        setDataMatrixButtonIcon(button);
+        button.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            showDataMatrixModal(normalizedContainerId, normalizedContainerId);
+        });
+        return button;
+    }
+
     function appendScanHistoryContainerCell(row, containerId) {
         var cell = document.createElement('div');
         var value = document.createElement('span');
@@ -1842,6 +1858,7 @@
         value.textContent = normalizedContainerId;
         links.className = 'aft-scan-history-container-links';
         links.appendChild(createScanHistoryContainerCopyButton(normalizedContainerId));
+        links.appendChild(createScanHistoryContainerDataMatrixButton(normalizedContainerId));
         links.appendChild(createScanHistoryContainerLink(
             'P',
             'Otw\u00f3rz Peculiar',
@@ -2468,7 +2485,7 @@
             return;
         }
         if (typeof GM_xmlhttpRequest !== 'function') {
-            window.alert('Nie uda\u0142o si\u0119 za\u0142adowa\u0107 biblioteki eksportu Excel.');
+            showAftNoticeDialog('Eksport Excel', 'Nie uda\u0142o si\u0119 za\u0142adowa\u0107 biblioteki eksportu Excel.');
             return;
         }
         xlsxLibraryLoading = true;
@@ -2479,7 +2496,7 @@
                 var evaluate;
                 xlsxLibraryLoading = false;
                 if (!response || response.status < 200 || response.status >= 300 || !response.responseText) {
-                    window.alert('Nie uda\u0142o si\u0119 za\u0142adowa\u0107 biblioteki eksportu Excel.');
+                    showAftNoticeDialog('Eksport Excel', 'Nie uda\u0142o si\u0119 za\u0142adowa\u0107 biblioteki eksportu Excel.');
                     return;
                 }
                 try {
@@ -2489,18 +2506,18 @@
                     loadedXlsxLibrary = null;
                 }
                 if (!loadedXlsxLibrary || !loadedXlsxLibrary.utils) {
-                    window.alert('Nie uda\u0142o si\u0119 uruchomi\u0107 biblioteki eksportu Excel.');
+                    showAftNoticeDialog('Eksport Excel', 'Nie uda\u0142o si\u0119 uruchomi\u0107 biblioteki eksportu Excel.');
                     return;
                 }
                 onReady(loadedXlsxLibrary);
             },
             onerror: function () {
                 xlsxLibraryLoading = false;
-                window.alert('Nie uda\u0142o si\u0119 za\u0142adowa\u0107 biblioteki eksportu Excel.');
+                showAftNoticeDialog('Eksport Excel', 'Nie uda\u0142o si\u0119 za\u0142adowa\u0107 biblioteki eksportu Excel.');
             },
             ontimeout: function () {
                 xlsxLibraryLoading = false;
-                window.alert('Przekroczono czas oczekiwania na bibliotek\u0119 eksportu Excel.');
+                showAftNoticeDialog('Eksport Excel', 'Przekroczono czas oczekiwania na bibliotek\u0119 eksportu Excel.');
             },
             timeout: 15000
         });
@@ -4465,7 +4482,7 @@
         var x;
 
         if (!symbol) {
-            throw new Error('Tekst Drop-Zone jest zbyt d\u0142ugi dla wbudowanego kodu DataMatrix.');
+            throw new Error('Tekst jest zbyt d\u0142ugi dla wbudowanego kodu DataMatrix.');
         }
 
         dataRows = symbol.regionRows * symbol.regionHeight;
@@ -10729,6 +10746,24 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         return button;
     }
 
+    function showAftNoticeDialog(titleText, messageText) {
+        var dialog = createAftEditDialog(titleText, messageText);
+        addAftDialogButton(dialog.actions, 'OK', 'aft-script-dialog-primary', closeAftEditDialog);
+        return dialog;
+    }
+
+    function showAftConfirmationDialog(titleText, messageText, confirmLabel, onConfirm) {
+        var dialog = createAftEditDialog(titleText, messageText);
+        addAftDialogButton(dialog.actions, 'Anuluj', 'aft-script-dialog-cancel', closeAftEditDialog);
+        addAftDialogButton(dialog.actions, confirmLabel, 'aft-script-dialog-danger', function () {
+            closeAftEditDialog();
+            if (typeof onConfirm === 'function') {
+                onConfirm();
+            }
+        });
+        return dialog;
+    }
+
     function openAftRenameDialog(titleText, fieldDefinitions, onSave) {
         var dialog = createAftEditDialog(titleText, '');
         var inputs = [];
@@ -11573,7 +11608,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
                 URL.revokeObjectURL(url);
             }, 500);
         } catch (e) {
-            window.alert('Eksport nie powi\u00f3d\u0142 si\u0119');
+            showAftNoticeDialog('Eksport Drop-Zon', 'Eksport nie powi\u00f3d\u0142 si\u0119.');
         }
     }
 
@@ -11651,7 +11686,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         try {
             parsed = JSON.parse(text);
         } catch (e1) {
-            window.alert('Import nie powi\u00f3d\u0142 si\u0119: nieprawid\u0142owy plik JSON.');
+            showAftNoticeDialog('Import Drop-Zon', 'Import nie powi\u00f3d\u0142 si\u0119: nieprawid\u0142owy plik JSON.');
             return;
         }
 
@@ -11662,7 +11697,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         } else if (parsed && parsed.data && isArray(parsed.data.groups)) {
             sourceGroups = parsed.data.groups;
         } else {
-            window.alert('Import nie powi\u00f3d\u0142 si\u0119: w pliku nie znaleziono grup.');
+            showAftNoticeDialog('Import Drop-Zon', 'Import nie powi\u00f3d\u0142 si\u0119: w pliku nie znaleziono grup.');
             return;
         }
 
@@ -11682,26 +11717,31 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         }
 
         if (!imported.length) {
-            window.alert('Import nie powi\u00f3d\u0142 si\u0119: plik nie zawiera Drop-Zon.');
+            showAftNoticeDialog('Import Drop-Zon', 'Import nie powi\u00f3d\u0142 si\u0119: plik nie zawiera Drop-Zon.');
             return;
         }
 
-        if (!window.confirm('Zaimportowa\u0107 Drop-Zony z pliku? Obecne grupy i Drop-Zony zostan\u0105 zast\u0105pione.')) {
-            return;
-        }
-
-        scanGroups = imported;
-        if (!hasNormalGroup && !scanGroups.length) {
-            ensureAtLeastOneGroup();
-        }
-
-        activeGroupId = hasNormalGroup ? scanGroups[findFirstNormalGroupIndex()].id : UNGROUPED_GROUP_ID;
-        saveActiveGroup();
-        saveGroups();
-        updateGroupSelect();
-        renderGroups();
-        window.alert('Zaimportowano ' + normalGroupCount + ' grup i ' +
-            importedButtonCount + ' Drop-Zon.');
+        showAftConfirmationDialog(
+            'Import Drop-Zon',
+            'Zaimportowa\u0107 Drop-Zony z pliku? Obecne grupy i Drop-Zony zostan\u0105 zast\u0105pione.',
+            'Importuj i zast\u0105p',
+            function () {
+                scanGroups = imported;
+                if (!hasNormalGroup && !scanGroups.length) {
+                    ensureAtLeastOneGroup();
+                }
+                activeGroupId = hasNormalGroup ? scanGroups[findFirstNormalGroupIndex()].id :
+                    UNGROUPED_GROUP_ID;
+                saveActiveGroup();
+                saveGroups();
+                updateGroupSelect();
+                renderGroups();
+                showAftNoticeDialog(
+                    'Import zako\u0144czony',
+                    'Zaimportowano ' + normalGroupCount + ' grup i ' + importedButtonCount + ' Drop-Zon.'
+                );
+            }
+        );
     }
 
     function findFirstNormalGroupIndex() {
@@ -11723,7 +11763,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             importDropZonesFromText(String(reader.result || ''));
         };
         reader.onerror = function () {
-            window.alert('Import nie powi\u00f3d\u0142 si\u0119: nie mo\u017cna odczyta\u0107 pliku.');
+            showAftNoticeDialog('Import Drop-Zon', 'Import nie powi\u00f3d\u0142 si\u0119: nie mo\u017cna odczyta\u0107 pliku.');
         };
         reader.readAsText(file);
     }
