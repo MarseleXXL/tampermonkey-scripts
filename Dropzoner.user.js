@@ -5,7 +5,7 @@
 // @author       aolenche
 // @description  Twórz własną listę Drop-Zon i porządkuj je według grup. Sprawdzaj wiek oraz ilość towaru w kontenerach. Przeglądaj historię skanowań.
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Dropzoner.png
-// @match        *://*/aft-moveapp-dub-dub.dub.proxy.amazon.com/move-container/*
+// @match        *://aft-moveapp-dub-dub.dub.proxy.amazon.com/move-container*
 // @match        *://peculiar-inventory-eu.aka.corp.amazon.com/*
 // @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Dropzoner.user.js
 // @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Dropzoner.user.js
