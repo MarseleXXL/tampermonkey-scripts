@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dropzoner
 // @namespace    aft-move-container-auto-tools-age
-// @version      1.01
+// @version      1.02
 // @author       aolenche
 // @description  Twórz własną listę Drop-Zon i porządkuj je według grup. Sprawdzaj wiek oraz ilość towaru w kontenerach. Przeglądaj historię skanowań.
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Dropzoner.png
@@ -40,8 +40,6 @@
     var PECULIAR_CONTAINER_HASH_KEY = 'dropzonerContainer';
     var FC_RESEARCH_RESULTS_URL = 'https://fcresearch-eu.aka.amazon.com/WRO1/results?s=';
     var INVENTORY_REQUEST_TIMEOUT_MS = 10000;
-    var INVENTORY_RETRY_BASE_MS = 1000;
-    var INVENTORY_RETRY_MAX_MS = 30000;
     var CONTAINER_SCAN_QUEUE_FAST_POLL_MS = 100;
     var CONTAINER_SCAN_QUEUE_SLOW_POLL_MS = 750;
     var CONTAINER_SCAN_QUEUE_BACKOFF_AFTER_MS = 3000;
@@ -172,9 +170,7 @@
     var windowFocusActivationGuardUntil = 0;
     var loadedXlsxLibrary = null;
     var xlsxLibraryLoading = false;
-    var ageAlarmAudioContext = null;
-    var ageAlarmAudioOutput = null;
-    var ageAlarmUnlockInstalled = false;
+    var scanResultAudioPlayers = {};
     var lastScanResultSoundEntryId = '';
     var nativeAftSoundBlockerInstalled = false;
     var bootRevealTimer = null;
@@ -1348,6 +1344,10 @@
             status = 'missing';
             ageText = EMPTY_CONTAINER_TEXT;
             ageMilliseconds = null;
+            totalQuantity = totalQuantity === null ? 0 : totalQuantity;
+        } else if (status === 'error') {
+            ageText = '0';
+            ageMilliseconds = null;
             totalQuantity = 0;
         }
         return {
@@ -1424,6 +1424,11 @@
             return null;
         }
         return Math.round(quantity);
+    }
+
+    function getScanHistoryEntryQuantity(entry) {
+        var quantity = normalizeTotalQuantity(entry && entry.totalQuantity);
+        return quantity === null && entry && entry.status === 'missing' ? 0 : quantity;
     }
 
     function getShiftAgeLimitMilliseconds(scannedAt) {
@@ -1554,42 +1559,6 @@
         storageSet(getScanResultSoundStorageKey(soundType), enabled ? '1' : '0');
     }
 
-    function getAgeAlarmAudioContext() {
-        var AudioContextClass;
-        if (ageAlarmAudioContext && ageAlarmAudioContext.state !== 'closed') {
-            return ageAlarmAudioContext;
-        }
-        try {
-            AudioContextClass = window.AudioContext || window.webkitAudioContext;
-            if (!AudioContextClass) {
-                return null;
-            }
-            ageAlarmAudioContext = new AudioContextClass();
-        } catch (e) {
-            ageAlarmAudioContext = null;
-        }
-        return ageAlarmAudioContext;
-    }
-
-    function unlockAgeAlarmAudio() {
-        var context = getAgeAlarmAudioContext();
-        if (!context || context.state !== 'suspended' || typeof context.resume !== 'function') {
-            return;
-        }
-        try {
-            context.resume();
-        } catch (e) {}
-    }
-
-    function installAgeAlarmAudioUnlock() {
-        if (ageAlarmUnlockInstalled) {
-            return;
-        }
-        ageAlarmUnlockInstalled = true;
-        document.addEventListener('pointerdown', unlockAgeAlarmAudio, true);
-        document.addEventListener('keydown', unlockAgeAlarmAudio, true);
-    }
-
     function getScanResultSoundPattern(soundType) {
         if (soundType === 'safe') {
             return [[523, 0, 0.18, 0.14], [659, 0.055, 0.21, 0.12]];
@@ -1600,88 +1569,127 @@
         return [[587, 0, 0.12, 0.15], [466, 0.085, 0.12, 0.16], [587, 0.17, 0.17, 0.15]];
     }
 
-    function getAuroraAudioOutput(context) {
-        var compressor;
-        var reverb;
-        var wet;
-        var impulse;
-        var data;
-        var channel;
+    function writeScanResultWavText(view, offset, value) {
         var i;
-        var seed;
-        if (ageAlarmAudioOutput && ageAlarmAudioOutput.context === context) {
-            return ageAlarmAudioOutput;
+        for (i = 0; i < value.length; i++) {
+            view.setUint8(offset + i, value.charCodeAt(i));
         }
-        compressor = context.createDynamicsCompressor();
-        compressor.threshold.value = -18;
-        compressor.knee.value = 16;
-        compressor.ratio.value = 4;
-        compressor.attack.value = 0.002;
-        compressor.release.value = 0.12;
-        compressor.connect(context.destination);
-        reverb = context.createConvolver();
-        impulse = context.createBuffer(2, Math.round(context.sampleRate * 0.25), context.sampleRate);
-        for (channel = 0; channel < impulse.numberOfChannels; channel++) {
-            data = impulse.getChannelData(channel);
-            seed = 7919 + channel * 104729;
-            for (i = 0; i < data.length; i++) {
-                seed = (seed * 16807) % 2147483647;
-                data[i] = (seed / 1073741823.5 - 1) * Math.pow(1 - i / data.length, 4.5);
+    }
+
+    function createScanResultSoundWavUrl(soundType) {
+        var voices = getScanResultSoundPattern(soundType);
+        var sampleRate = 44100;
+        var leadingSeconds = 0.035;
+        var tailSeconds = 0.08;
+        var durationSeconds = 0;
+        var sampleCount;
+        var dry;
+        var samples;
+        var voice;
+        var startSample;
+        var voiceSamples;
+        var sampleIndex;
+        var localIndex;
+        var localTime;
+        var attack;
+        var progress;
+        var envelope;
+        var phase;
+        var triangle;
+        var overtone;
+        var peak;
+        var filtered = 0;
+        var filterAlpha = 1 - Math.exp(-2 * Math.PI * 2600 / sampleRate);
+        var echoOne = Math.round(sampleRate * 0.045);
+        var echoTwo = Math.round(sampleRate * 0.08);
+        var mixed;
+        var buffer;
+        var view;
+        var pcm;
+        var i;
+
+        for (i = 0; i < voices.length; i++) {
+            durationSeconds = Math.max(durationSeconds, voices[i][1] + voices[i][2]);
+        }
+        durationSeconds += leadingSeconds + tailSeconds;
+        sampleCount = Math.ceil(durationSeconds * sampleRate);
+        dry = new Float32Array(sampleCount);
+        samples = new Float32Array(sampleCount);
+
+        for (i = 0; i < voices.length; i++) {
+            voice = voices[i];
+            startSample = Math.round((leadingSeconds + voice[1]) * sampleRate);
+            voiceSamples = Math.round(voice[2] * sampleRate);
+            peak = Math.min(1, voice[3] * (10 / 3));
+            for (localIndex = 0; localIndex < voiceSamples; localIndex++) {
+                sampleIndex = startSample + localIndex;
+                localTime = localIndex / sampleRate;
+                attack = Math.min(1, localTime / 0.012);
+                progress = Math.max(0, (localTime - 0.012) / Math.max(0.001, voice[2] - 0.012));
+                envelope = attack * Math.pow(0.0002, progress);
+                phase = 2 * Math.PI * voice[0] * localTime;
+                triangle = 2 / Math.PI * Math.asin(Math.sin(phase));
+                overtone = Math.sin(phase * 1.5) * 0.16;
+                dry[sampleIndex] += (triangle + overtone) * peak * envelope;
             }
         }
-        reverb.buffer = impulse;
-        wet = context.createGain();
-        wet.gain.value = 0.16;
-        reverb.connect(wet);
-        wet.connect(compressor);
-        ageAlarmAudioOutput = { context: context, dry: compressor, reverb: reverb };
-        return ageAlarmAudioOutput;
+
+        for (i = 0; i < sampleCount; i++) {
+            filtered += filterAlpha * (dry[i] - filtered);
+            samples[i] = filtered;
+        }
+        for (i = 0; i < sampleCount; i++) {
+            mixed = samples[i];
+            if (i >= echoOne) {
+                mixed += samples[i - echoOne] * 0.08;
+            }
+            if (i >= echoTwo) {
+                mixed += samples[i - echoTwo] * 0.04;
+            }
+            samples[i] = Math.max(-1, Math.min(1, mixed));
+        }
+
+        buffer = new ArrayBuffer(44 + sampleCount * 2);
+        view = new DataView(buffer);
+        writeScanResultWavText(view, 0, 'RIFF');
+        view.setUint32(4, 36 + sampleCount * 2, true);
+        writeScanResultWavText(view, 8, 'WAVEfmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeScanResultWavText(view, 36, 'data');
+        view.setUint32(40, sampleCount * 2, true);
+        for (i = 0; i < sampleCount; i++) {
+            pcm = samples[i] < 0 ? samples[i] * 32768 : samples[i] * 32767;
+            view.setInt16(44 + i * 2, Math.round(pcm), true);
+        }
+        return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
     }
 
-    function scheduleAuroraVoice(context, output, voice, volumeGain) {
-        var startAt = context.currentTime + 0.035 + voice[1];
-        var stopAt = startAt + voice[2];
-        var peak = Math.min(1, voice[3] * volumeGain * (10 / 3));
-        var oscillator = context.createOscillator();
-        var overtone = context.createOscillator();
-        var filter = context.createBiquadFilter();
-        var gain = context.createGain();
-        var overtoneGain = context.createGain();
-        oscillator.type = 'triangle';
-        overtone.type = 'sine';
-        oscillator.frequency.setValueAtTime(voice[0], startAt);
-        overtone.frequency.setValueAtTime(voice[0] * 1.5, startAt);
-        filter.type = 'lowpass';
-        filter.frequency.value = 2600;
-        filter.Q.value = 0.6;
-        overtoneGain.gain.value = 0.16;
-        gain.gain.setValueAtTime(0.0001, startAt);
-        gain.gain.exponentialRampToValueAtTime(peak, startAt + 0.012);
-        gain.gain.exponentialRampToValueAtTime(0.0001, stopAt);
-        oscillator.connect(filter);
-        overtone.connect(overtoneGain);
-        overtoneGain.connect(filter);
-        filter.connect(gain);
-        gain.connect(output.dry);
-        gain.connect(output.reverb);
-        oscillator.start(startAt);
-        overtone.start(startAt);
-        oscillator.stop(stopAt + 0.02);
-        overtone.stop(stopAt + 0.02);
+    function getScanResultAudioPlayer(soundType) {
+        var player = scanResultAudioPlayers[soundType];
+        if (player) {
+            return player;
+        }
+        try {
+            player = new Audio(createScanResultSoundWavUrl(soundType));
+            player.preload = 'auto';
+            player.load();
+            scanResultAudioPlayers[soundType] = player;
+            return player;
+        } catch (e) {
+            return null;
+        }
     }
 
-    function scheduleScanResultSound(context, soundType) {
-        var voices = getScanResultSoundPattern(soundType);
-        var volumeGain = getAgeAlarmVolumePercent() / 100;
-        var output;
-        var i;
-        if (volumeGain <= 0) {
-            return;
-        }
-        output = getAuroraAudioOutput(context);
-        for (i = 0; i < voices.length; i++) {
-            scheduleAuroraVoice(context, output, voices[i], volumeGain);
-        }
+    function preloadScanResultSounds() {
+        getScanResultAudioPlayer('iol');
+        getScanResultAudioPlayer('safe');
+        getScanResultAudioPlayer('missing');
     }
 
     function getScanResultSoundType(entry) {
@@ -1698,31 +1706,26 @@
     }
 
     function playScanResultSound(entry) {
-        var context;
-        var resumeResult;
+        var player;
+        var volume = getAgeAlarmVolumePercent() / 100;
         var soundType = getScanResultSoundType(entry);
         if (!soundType || entry.id === lastScanResultSoundEntryId) {
             return;
         }
-        lastScanResultSoundEntryId = entry.id;
-        if (!isScanResultSoundEnabled(soundType)) {
+        if (!isScanResultSoundEnabled(soundType) || volume <= 0) {
             return;
         }
-        context = getAgeAlarmAudioContext();
-        if (!context) {
+        player = getScanResultAudioPlayer(soundType);
+        if (!player) {
             return;
         }
         try {
-            if (context.state === 'suspended' && typeof context.resume === 'function') {
-                resumeResult = context.resume();
-                if (resumeResult && typeof resumeResult.then === 'function') {
-                    resumeResult.then(function () {
-                        scheduleScanResultSound(context, soundType);
-                    }, function () {});
-                    return;
-                }
-            }
-            scheduleScanResultSound(context, soundType);
+            player.pause();
+            player.currentTime = 0;
+            player.muted = false;
+            player.volume = volume;
+            player.play();
+            lastScanResultSoundEntryId = entry.id;
         } catch (e) {}
     }
 
@@ -1795,6 +1798,18 @@
         return link;
     }
 
+    function copyContainerToClipboard(containerId) {
+        var normalizedContainerId = trimText(containerId);
+        if (!normalizedContainerId || typeof GM_setClipboard !== 'function') {
+            return false;
+        }
+        try {
+            GM_setClipboard(normalizedContainerId, 'text');
+            return true;
+        } catch (e) {}
+        return false;
+    }
+
     function createScanHistoryContainerCopyButton(containerId) {
         var button = document.createElement('button');
         var normalizedContainerId = trimText(containerId);
@@ -1808,7 +1823,7 @@
         button.addEventListener('click', function (event) {
             event.preventDefault();
             event.stopPropagation();
-            GM_setClipboard(normalizedContainerId, 'text');
+            copyContainerToClipboard(normalizedContainerId);
             if (button.__aftCopyFeedbackTimer) {
                 window.clearTimeout(button.__aftCopyFeedbackTimer);
             }
@@ -1905,7 +1920,7 @@
         var destination = getScanHistoryDestination(entry).toLowerCase();
         var container = trimText(entry.containerId).toLowerCase();
         var state = scanHistoryFilters.ageState;
-        var quantity = entry.status === 'missing' ? 0 : normalizeTotalQuantity(entry.totalQuantity);
+        var quantity = getScanHistoryEntryQuantity(entry);
         var quantityMin = trimText(scanHistoryFilters.quantityMin);
         var quantityMax = trimText(scanHistoryFilters.quantityMax);
 
@@ -1952,7 +1967,7 @@
             return entry.ageMilliseconds === null ? null : Number(entry.ageMilliseconds);
         }
         if (column === 'quantity') {
-            return entry.status === 'missing' ? 0 : normalizeTotalQuantity(entry.totalQuantity);
+            return getScanHistoryEntryQuantity(entry);
         }
         return '';
     }
@@ -2029,13 +2044,19 @@
         if (entry.status === 'ready') {
             row.classList.add(isScanHistoryEntryOverAgeLimit(entry) ?
                 'aft-scan-history-age-overdue' : 'aft-scan-history-age-safe');
+        } else if (entry.status === 'error') {
+            row.classList.add('aft-scan-history-age-zero');
         }
         row.setAttribute('data-scan-history-id', entry.id);
         appendScanHistoryCell(row, 'aft-scan-history-time', formatScanHistoryTime(entry.scannedAt));
         appendScanHistoryCell(row, 'aft-scan-history-destination', getScanHistoryDestination(entry));
         appendScanHistoryContainerCell(row, entry.containerId);
         appendScanHistoryCell(row, 'aft-scan-history-age', entry.ageText);
-        quantityText = entry.status === 'missing' ? 0 : normalizeTotalQuantity(entry.totalQuantity);
+        quantityText = getScanHistoryEntryQuantity(entry);
+        if (quantityText !== null) {
+            row.classList.add(quantityText > 0 ?
+                'aft-scan-history-quantity-positive' : 'aft-scan-history-quantity-zero');
+        }
         appendScanHistoryCell(row, 'aft-scan-history-quantity', quantityText === null ? '--' : String(quantityText));
         return row;
     }
@@ -2205,6 +2226,7 @@
         var quantitySize;
         var quantityAvailableWidth;
         var quantityRequiredWidth;
+        var quantityNumber = null;
         var targetStyle;
 
         if (!overlay || !ageBox || !quantityBox || !target || !isVisible(target)) {
@@ -2253,14 +2275,19 @@
         height = target.clientHeight || target.offsetHeight || 80;
         if (entry.status === 'ready') {
             ageText = entry.ageText;
-            quantityText = normalizeTotalQuantity(entry.totalQuantity);
-            quantityText = quantityText === null ? '--' : String(quantityText);
+            quantityNumber = normalizeTotalQuantity(entry.totalQuantity);
+            quantityText = quantityNumber === null ? '--' : String(quantityNumber);
         } else if (entry.status === 'loading') {
             ageText = '...';
             quantityText = '...';
         } else if (entry.status === 'missing') {
             ageText = EMPTY_CONTAINER_TEXT;
+            quantityNumber = getScanHistoryEntryQuantity(entry);
+            quantityText = String(quantityNumber);
+        } else if (entry.status === 'error') {
+            ageText = '0';
             quantityText = '0';
+            quantityNumber = 0;
         } else {
             ageText = '--';
             quantityText = '--';
@@ -2281,11 +2308,17 @@
         className = 'aft-latest-age-box aft-latest-age-' + entry.status;
         if (entry.status === 'ready') {
             className += isScanHistoryEntryOverAgeLimit(entry) ? ' aft-latest-age-overdue' : ' aft-latest-age-safe';
+        } else if (entry.status === 'error') {
+            className += ' aft-latest-age-zero';
         }
         if (ageBox.className !== className) {
             ageBox.className = className;
         }
         className = 'aft-latest-quantity-box aft-latest-age-' + entry.status;
+        if (quantityNumber !== null) {
+            className += quantityNumber > 0 ?
+                ' aft-latest-quantity-positive' : ' aft-latest-quantity-zero';
+        }
         if (quantityBox.className !== className) {
             quantityBox.className = className;
         }
@@ -2562,7 +2595,7 @@
                 entry.dropZoneText,
                 entry.containerId,
                 entry.ageText,
-                entry.status === 'missing' ? 0 : normalizeTotalQuantity(entry.totalQuantity)
+                getScanHistoryEntryQuantity(entry)
             ]);
         }
 
@@ -2608,11 +2641,21 @@
         if (status === 'missing') {
             entry.ageText = EMPTY_CONTAINER_TEXT;
             entry.ageMilliseconds = null;
+            entry.totalQuantity = normalizeTotalQuantity(totalQuantity);
+            if (entry.totalQuantity === null) {
+                entry.totalQuantity = 0;
+            }
+        } else if (status === 'error') {
+            entry.ageText = '0';
+            entry.ageMilliseconds = null;
             entry.totalQuantity = 0;
         } else {
             entry.ageText = ageText;
             entry.ageMilliseconds = ageMilliseconds === undefined ? null : ageMilliseconds;
             entry.totalQuantity = normalizeTotalQuantity(totalQuantity);
+        }
+        if (isScanHistoryEntryOverAgeLimit(entry)) {
+            copyContainerToClipboard(entry.containerId);
         }
         playScanResultSound(entry);
         saveScanHistory();
@@ -2635,45 +2678,31 @@
             '?aft_age_request=' + now();
         var entry = findScanHistoryEntry(entryId);
         var state = inventoryAgeRequestStates[entryId];
+        var completed = false;
 
         function complete(status, ageText, ageMilliseconds, totalQuantity) {
-            delete inventoryAgeRequestStates[entryId];
-            updateScanHistoryEntry(entryId, status, ageText, ageMilliseconds, totalQuantity);
-        }
-
-        function retry() {
-            var currentEntry = findScanHistoryEntry(entryId);
-            var delay;
-            if (!currentEntry || currentEntry.status !== 'loading') {
-                delete inventoryAgeRequestStates[entryId];
+            if (completed) {
                 return;
             }
-            state.active = false;
-            state.attempt++;
-            delay = Math.min(
-                INVENTORY_RETRY_MAX_MS,
-                INVENTORY_RETRY_BASE_MS * Math.pow(2, Math.min(5, state.attempt - 1))
-            );
-            state.timer = window.setTimeout(function () {
-                state.timer = null;
-                requestFreshContainerAge(containerId, entryId);
-            }, delay);
+            completed = true;
+            delete inventoryAgeRequestStates[entryId];
+            updateScanHistoryEntry(entryId, status, ageText, ageMilliseconds, totalQuantity);
         }
 
         if (!entry || entry.status !== 'loading') {
             delete inventoryAgeRequestStates[entryId];
             return;
         }
-        if (state && (state.active || state.timer)) {
+        if (state && state.active) {
             return;
         }
         if (!state) {
-            state = { active: false, timer: null, attempt: 0 };
+            state = { active: false };
             inventoryAgeRequestStates[entryId] = state;
         }
 
         if (typeof GM_xmlhttpRequest !== 'function') {
-            complete('error', '\u017b\u0105danie niedost\u0119pne');
+            complete('error', '0', null, 0);
             return;
         }
 
@@ -2694,11 +2723,7 @@
                 var record;
                 try {
                     if (!response || response.status < 200 || response.status >= 300) {
-                        if (!response || !response.status || response.status === 429 || response.status >= 500) {
-                            retry();
-                            return;
-                        }
-                        complete('error', 'B\u0142\u0105d \u017c\u0105dania');
+                        complete('error', '0', null, 0);
                         return;
                     }
                     data = parseInventoryResponse(response);
@@ -2707,6 +2732,11 @@
                         return;
                     }
                     record = data.containerRecord;
+                    if (!isFinite(Number(record.oldestInventoryAgeMills)) ||
+                            Number(record.oldestInventoryAgeMills) < 0) {
+                        complete('missing', EMPTY_CONTAINER_TEXT, null, record.totalQuantity);
+                        return;
+                    }
                     complete(
                         'ready',
                         formatContainerAge(record.oldestInventoryAgeMills),
@@ -2714,14 +2744,14 @@
                         record.totalQuantity
                     );
                 } catch (e) {
-                    retry();
+                    complete('error', '0', null, 0);
                 }
             },
             onerror: function () {
-                retry();
+                complete('error', '0', null, 0);
             },
             ontimeout: function () {
-                retry();
+                complete('error', '0', null, 0);
             }
         });
     }
@@ -5460,6 +5490,13 @@ html.aft-scan-history-fullscreen #aft-scan-buttons-panel {
 .aft-scan-history-missing .aft-scan-history-quantity {
   color: #7A817F;
 }
+.aft-scan-history-age-zero .aft-scan-history-age,
+.aft-scan-history-quantity-zero .aft-scan-history-quantity {
+  color: #7A817F;
+}
+.aft-scan-history-quantity-positive .aft-scan-history-quantity {
+  color: #C96345;
+}
 .aft-scan-history-empty {
   padding: 18px 12px;
   color: #7a887e;
@@ -5741,6 +5778,13 @@ html.aft-auto-dropzone-dark #aft-scan-buttons-panel .aft-scan-history-missing .a
 #aft-latest-age-box.aft-latest-age-error .aft-latest-container-age-value,
 #aft-latest-quantity-box.aft-latest-age-error .aft-latest-container-quantity-value {
   color: #D85454 !important;
+}
+#aft-latest-age-box.aft-latest-age-zero .aft-latest-container-age-value,
+#aft-latest-quantity-box.aft-latest-quantity-zero .aft-latest-container-quantity-value {
+  color: #8B98A5 !important;
+}
+#aft-latest-quantity-box.aft-latest-quantity-positive .aft-latest-container-quantity-value {
+  color: #F0A68F !important;
 }
 #aft-latest-age-box.aft-latest-age-error,
 #aft-latest-age-box.aft-latest-age-missing,
@@ -7983,6 +8027,26 @@ html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-latest-quantity-b
 html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-latest-age-box.aft-latest-age-missing .aft-latest-container-age-value,
 html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-latest-quantity-box.aft-latest-age-missing .aft-latest-container-quantity-value {
   color: #8A8178 !important;
+}
+html.aft-compact-move-layout #aft-scan-buttons-panel .aft-scan-history-age-zero .aft-scan-history-age,
+html.aft-compact-move-layout #aft-scan-buttons-panel .aft-scan-history-quantity-zero .aft-scan-history-quantity,
+html.aft-compact-move-layout #aft-latest-age-box.aft-latest-age-zero .aft-latest-container-age-value,
+html.aft-compact-move-layout #aft-latest-quantity-box.aft-latest-quantity-zero .aft-latest-container-quantity-value {
+  color: #8B98A5 !important;
+}
+html.aft-compact-move-layout #aft-scan-buttons-panel .aft-scan-history-quantity-positive .aft-scan-history-quantity,
+html.aft-compact-move-layout #aft-latest-quantity-box.aft-latest-quantity-positive .aft-latest-container-quantity-value {
+  color: #F0A68F !important;
+}
+html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-scan-buttons-panel .aft-scan-history-age-zero .aft-scan-history-age,
+html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-scan-buttons-panel .aft-scan-history-quantity-zero .aft-scan-history-quantity,
+html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-latest-age-box.aft-latest-age-zero .aft-latest-container-age-value,
+html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-latest-quantity-box.aft-latest-quantity-zero .aft-latest-container-quantity-value {
+  color: #8A8178 !important;
+}
+html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-scan-buttons-panel .aft-scan-history-quantity-positive .aft-scan-history-quantity,
+html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-latest-quantity-box.aft-latest-quantity-positive .aft-latest-container-quantity-value {
+  color: #D8886F !important;
 }
 html.aft-compact-move-layout:not(.aft-auto-dropzone-dark) #aft-scan-buttons-panel .aft-scan-history-columns {
   background: var(--aft-light-surface) !important;
@@ -10752,6 +10816,22 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         return dialog;
     }
 
+    function showTimedAftNoticeDialog(titleText, messageText, duration) {
+        var dialog = showAftNoticeDialog(titleText, messageText);
+        var button = dialog.actions.querySelector('button');
+        var timer = window.setTimeout(function () {
+            if (getCachedElement('aft-script-dialog-overlay') === dialog.overlay) {
+                closeAftEditDialog();
+            }
+        }, duration);
+        if (button) {
+            button.addEventListener('click', function () {
+                window.clearTimeout(timer);
+            });
+        }
+        return dialog;
+    }
+
     function showAftConfirmationDialog(titleText, messageText, confirmLabel, onConfirm) {
         var dialog = createAftEditDialog(titleText, messageText);
         addAftDialogButton(dialog.actions, 'Anuluj', 'aft-script-dialog-cancel', closeAftEditDialog);
@@ -12974,6 +13054,9 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
                         scanDirect(value);
                     }
                 } else if (!isAftInputDisabled() && !hasBlockingAftModal()) {
+                    if (isActiveAftStep(AFT_STEP_DESTINATION) && rejectInvalidDropZoneScan(value, null)) {
+                        return;
+                    }
                     scanDirect(value);
                 }
                 return;
@@ -13117,10 +13200,46 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         }
     }
 
+    function isValidDropZoneScan(value) {
+        return /^dz/.test(trimText(value));
+    }
+
+    function rejectInvalidDropZoneScan(value, input) {
+        if (isValidDropZoneScan(value)) {
+            return false;
+        }
+        if (input) {
+            try {
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            } catch (e) {}
+        }
+        showTimedAftNoticeDialog('Zeskanuj Drop-Zon\u0119', '', 3000);
+        return true;
+    }
+
+    function isNativeAftTextEntryInput(target) {
+        var wrapper;
+        if (!isManualAsciiTextTarget(target)) {
+            return false;
+        }
+        try {
+            wrapper = target.closest('#text-entry');
+        } catch (e) {
+            wrapper = null;
+        }
+        return !!(wrapper && isVisible(wrapper));
+    }
+
     function installManualAsciiInput() {
         function handleManualAsciiKeydown(event) {
             var character;
             if (!event || !isManualAsciiTextTarget(event.target) || event.ctrlKey || event.altKey || event.metaKey || event.repeat || event.isComposing) {
+                return;
+            }
+            if (isPhysicalScannerTerminator(event) && isActiveAftStep(AFT_STEP_DESTINATION) &&
+                    isNativeAftTextEntryInput(event.target) && rejectInvalidDropZoneScan(event.target.value, event.target)) {
+                consumePhysicalScannerEvent(event);
                 return;
             }
             character = getUsCharacterFromManualKey(event);
@@ -13334,6 +13453,10 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
                     return;
                 }
                 if (!canOpenDirectScanEntry(stepId)) {
+                    flashDirectScanInputError(input);
+                    return;
+                }
+                if (stepId === AFT_STEP_DESTINATION && rejectInvalidDropZoneScan(value, input)) {
                     flashDirectScanInputError(input);
                     return;
                 }
@@ -13853,7 +13976,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         }
 
         installNativeAftSoundBlocker();
-        installAgeAlarmAudioUnlock();
+        preloadScanResultSounds();
         createScanButtonsPanel();
         initializeUserProfileSync();
         startObserver();
