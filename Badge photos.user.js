@@ -7,8 +7,8 @@
 // @match        *://fcresearch-eu.aka.amazon.com/*
 // @match        *://qi-fcresearch-eu.corp.amazon.com/*
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Badge_photos.png
-// @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Badge photos.user.js
-// @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Badge photos.user.js
+// @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Badge-photos.user.js
+// @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Badge-photos.user.js
 // @grant        none
 // @run-at       document-start
 // @noframes
