@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dropzoner
 // @namespace    aft-move-container-auto-tools-age
-// @version      1.02
+// @version      1.03
 // @author       aolenche
 // @description  Twórz własną listę Drop-Zon i porządkuj je według grup. Sprawdzaj wiek oraz ilość towaru w kontenerach. Przeglądaj historię skanowań.
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Dropzoner.png
@@ -61,6 +61,7 @@
     var STORAGE_KEY_SCAN_SOUND_MISSING = 'aft_move_container_scan_sound_missing_v1';
     var STORAGE_KEY_WINDOW_FOCUS_INDICATOR = 'aft_move_container_window_focus_indicator_v1';
     var STORAGE_KEY_WINDOW_FOCUS_INDICATOR_DIRTY = 'aft_move_container_window_focus_indicator_dirty_v1';
+    var STORAGE_KEY_USER_PROFILE_DIRTY = 'aft_move_container_user_profile_dirty_v1';
     var STORAGE_KEY_SCAN_HISTORY = 'aft_move_container_scan_history_v1';
     var STORAGE_KEY_SCAN_HISTORY_COLLAPSED = 'aft_move_container_scan_history_collapsed_v1';
     var STORAGE_KEY_SCAN_HISTORY_HEIGHT = 'aft_move_container_scan_history_height_v1';
@@ -137,6 +138,7 @@
     var activeAgeDropZoneLabel = '';
     var lastAgeScanSignature = '';
     var containerScanQueue = [];
+    var containerScanQueueGeneration = 0;
     var containerScanQueueTimer = null;
     var containerScanQueueActiveJob = null;
     var containerScanQueueDispatching = false;
@@ -172,6 +174,11 @@
     var xlsxLibraryLoading = false;
     var scanResultAudioPlayers = {};
     var lastScanResultSoundEntryId = '';
+    var scanResultSoundQueue = [];
+    var scanResultSoundActiveJob = null;
+    var scanResultSoundTimer = null;
+    var scanResultSoundBlocked = false;
+    var scanResultSoundGestureInstalled = false;
     var nativeAftSoundBlockerInstalled = false;
     var bootRevealTimer = null;
     var userProfileSyncInitialized = false;
@@ -941,7 +948,16 @@
             return;
         }
         userProfileSyncLocalVersion++;
+        storageSet(getUserProfileSyncDirtyStorageKey(), makeId('change'));
         scheduleUserProfileSyncPush(USER_PROFILE_SYNC_DEBOUNCE_MS);
+    }
+
+    function getUserProfileSyncDirtyStorageKey() {
+        return STORAGE_KEY_USER_PROFILE_DIRTY + ':' + userProfileSyncLogin;
+    }
+
+    function getUserProfileSyncDirtyToken() {
+        return storageGet(getUserProfileSyncDirtyStorageKey(), '');
     }
 
     function isWindowFocusIndicatorSyncDirty() {
@@ -1154,6 +1170,8 @@
 
     function pushUserProfileSync() {
         var profile;
+        var dirtyToken;
+        var localVersion;
         if (!userProfileSyncInitialized || userProfileSyncRequestActive) {
             userProfileSyncPushPending = true;
             return;
@@ -1161,10 +1179,18 @@
         userProfileSyncPushPending = false;
         userProfileSyncRequestActive = true;
         profile = buildUserProfileSyncDocument();
+        dirtyToken = getUserProfileSyncDirtyToken();
+        localVersion = userProfileSyncLocalVersion;
         requestUserProfileSync('PUT', profile, function (status, response) {
             userProfileSyncRequestActive = false;
             if (status === 200 || status === 201) {
                 userProfileSyncRemoteRevision = Math.max(0, Number(response && response.profile && response.profile.revision) || profile.revision);
+                if (localVersion === userProfileSyncLocalVersion && dirtyToken === getUserProfileSyncDirtyToken()) {
+                    storageSet(getUserProfileSyncDirtyStorageKey(), '');
+                    clearWindowFocusIndicatorSyncDirty();
+                } else {
+                    userProfileSyncPushPending = true;
+                }
                 if (userProfileSyncPushPending) {
                     scheduleUserProfileSyncPush(USER_PROFILE_SYNC_DEBOUNCE_MS);
                 }
@@ -1202,7 +1228,8 @@
             }
             profile = response.profile;
             userProfileSyncRemoteRevision = Math.max(0, Number(profile && profile.revision) || 0);
-            if (preserveLocal || userProfileSyncLocalVersion !== localVersionAtStart) {
+            if (preserveLocal || getUserProfileSyncDirtyToken() ||
+                    userProfileSyncLocalVersion !== localVersionAtStart) {
                 scheduleUserProfileSyncPush(0);
                 return;
             }
@@ -1243,6 +1270,9 @@
         pullUserProfileSync(false);
     }
     function activateAgeDropZone(buttonId, dropZoneText, dropZoneLabel) {
+        if (trimText(activeAgeDropZoneText).toLowerCase() !== trimText(dropZoneText).toLowerCase()) {
+            cancelAftContainerScanQueue();
+        }
         activeAgeButtonId = trimText(buttonId);
         activeAgeDropZoneText = trimText(dropZoneText);
         activeAgeDropZoneLabel = trimText(dropZoneLabel) || activeAgeDropZoneText;
@@ -1678,6 +1708,16 @@
         try {
             player = new Audio(createScanResultSoundWavUrl(soundType));
             player.preload = 'auto';
+            player.addEventListener('ended', function () {
+                if (scanResultSoundActiveJob && scanResultSoundActiveJob.player === player) {
+                    finishScanResultSound(scanResultSoundActiveJob);
+                }
+            });
+            player.addEventListener('error', function () {
+                if (scanResultSoundActiveJob && scanResultSoundActiveJob.player === player) {
+                    recoverScanResultSound(scanResultSoundActiveJob, null);
+                }
+            });
             player.load();
             scanResultAudioPlayers[soundType] = player;
             return player;
@@ -1690,6 +1730,137 @@
         getScanResultAudioPlayer('iol');
         getScanResultAudioPlayer('safe');
         getScanResultAudioPlayer('missing');
+        if (!scanResultSoundGestureInstalled) {
+            scanResultSoundGestureInstalled = true;
+            document.addEventListener('pointerdown', prepareScanResultSoundsForGesture, true);
+            document.addEventListener('keydown', prepareScanResultSoundsForGesture, true);
+        }
+    }
+
+    function prepareScanResultSoundsForGesture(event) {
+        if (!event || !event.isTrusted) {
+            return;
+        }
+        scanResultSoundBlocked = false;
+        ['iol', 'safe', 'missing'].forEach(function (soundType) {
+            var player = getScanResultAudioPlayer(soundType);
+            var promise;
+            if (!player || player.__aftSoundUnlocked || player.__aftSoundWarming ||
+                    (scanResultSoundActiveJob && scanResultSoundActiveJob.player === player)) {
+                return;
+            }
+            player.__aftSoundWarming = true;
+            try {
+                player.muted = false;
+                player.volume = 0;
+                promise = player.play();
+                Promise.resolve(promise).then(function () {
+                    player.pause();
+                    player.currentTime = 0;
+                    player.__aftSoundUnlocked = true;
+                    player.__aftSoundWarming = false;
+                    processScanResultSoundQueue();
+                }, function () {
+                    player.__aftSoundWarming = false;
+                    processScanResultSoundQueue();
+                });
+            } catch (e) {
+                player.__aftSoundWarming = false;
+            }
+        });
+        processScanResultSoundQueue();
+    }
+
+    function clearScanResultSoundTimer() {
+        if (scanResultSoundTimer) {
+            window.clearTimeout(scanResultSoundTimer);
+            scanResultSoundTimer = null;
+        }
+    }
+
+    function finishScanResultSound(job) {
+        if (scanResultSoundActiveJob !== job) {
+            return;
+        }
+        clearScanResultSoundTimer();
+        scanResultSoundActiveJob = null;
+        scanResultSoundQueue.shift();
+        processScanResultSoundQueue();
+    }
+
+    function recoverScanResultSound(job, error) {
+        if (scanResultSoundActiveJob !== job) {
+            return;
+        }
+        clearScanResultSoundTimer();
+        scanResultSoundActiveJob = null;
+        job.player.__aftSoundUnlocked = false;
+        try {
+            job.player.pause();
+        } catch (e) {}
+        if ((error && error.name === 'NotAllowedError') || job.retries >= 1) {
+            job.retries = 0;
+            scanResultSoundBlocked = true;
+            return;
+        }
+        job.retries++;
+        try {
+            job.player.load();
+        } catch (e2) {}
+        scanResultSoundTimer = window.setTimeout(function () {
+            scanResultSoundTimer = null;
+            processScanResultSoundQueue();
+        }, 100);
+    }
+
+    function processScanResultSoundQueue() {
+        var job;
+        var promise;
+        var attempt;
+        var volume;
+        if (scanResultSoundActiveJob || scanResultSoundBlocked || scanResultSoundTimer) {
+            return;
+        }
+        while (scanResultSoundQueue.length) {
+            job = scanResultSoundQueue[0];
+            volume = getAgeAlarmVolumePercent() / 100;
+            if (!isScanResultSoundEnabled(job.soundType) || volume <= 0) {
+                scanResultSoundQueue.shift();
+                continue;
+            }
+            job.player = getScanResultAudioPlayer(job.soundType);
+            if (!job.player) {
+                scanResultSoundBlocked = true;
+                return;
+            }
+            if (job.player.__aftSoundWarming) {
+                return;
+            }
+            scanResultSoundActiveJob = job;
+            attempt = ++job.attempt;
+            scanResultSoundTimer = window.setTimeout(function () {
+                recoverScanResultSound(job, null);
+            }, 4000);
+            try {
+                job.player.currentTime = 0;
+                job.player.muted = false;
+                job.player.volume = volume;
+                promise = job.player.play();
+                Promise.resolve(promise).then(function () {
+                    if (scanResultSoundActiveJob === job && job.attempt === attempt) {
+                        job.player.__aftSoundUnlocked = true;
+                        lastScanResultSoundEntryId = job.entryId;
+                    }
+                }, function (error) {
+                    if (scanResultSoundActiveJob === job && job.attempt === attempt) {
+                        recoverScanResultSound(job, error);
+                    }
+                });
+            } catch (e) {
+                recoverScanResultSound(job, e);
+            }
+            return;
+        }
     }
 
     function getScanResultSoundType(entry) {
@@ -1706,7 +1877,6 @@
     }
 
     function playScanResultSound(entry) {
-        var player;
         var volume = getAgeAlarmVolumePercent() / 100;
         var soundType = getScanResultSoundType(entry);
         if (!soundType || entry.id === lastScanResultSoundEntryId) {
@@ -1715,18 +1885,11 @@
         if (!isScanResultSoundEnabled(soundType) || volume <= 0) {
             return;
         }
-        player = getScanResultAudioPlayer(soundType);
-        if (!player) {
+        if (scanResultSoundQueue.some(function (job) { return job.entryId === entry.id; })) {
             return;
         }
-        try {
-            player.pause();
-            player.currentTime = 0;
-            player.muted = false;
-            player.volume = volume;
-            player.play();
-            lastScanResultSoundEntryId = entry.id;
-        } catch (e) {}
+        scanResultSoundQueue.push({ entryId: entry.id, soundType: soundType, retries: 0, attempt: 0 });
+        processScanResultSoundQueue();
     }
 
     function findScanHistoryEntry(entryId) {
@@ -2087,6 +2250,7 @@
         var i;
         var rowId;
         var row;
+        var existingEntryIds = Object.create(null);
         if (!list || !entry || hasActiveScanHistoryFilters() ||
                 (isNewEntry && (scanHistorySortColumn !== 'time' || scanHistorySortDirection !== 'desc')) ||
                 (!isNewEntry && (scanHistorySortColumn === 'age' || scanHistorySortColumn === 'quantity'))) {
@@ -2100,10 +2264,13 @@
             return;
         }
 
+        for (i = 0; i < scanHistoryEntries.length; i++) {
+            existingEntryIds[scanHistoryEntries[i].id] = true;
+        }
         rows = list.querySelectorAll('[data-scan-history-id]');
         for (i = rows.length - 1; i >= 0; i--) {
             rowId = rows[i].getAttribute('data-scan-history-id');
-            if (!findScanHistoryEntry(rowId)) {
+            if (!existingEntryIds[rowId]) {
                 rows[i].parentNode.removeChild(rows[i]);
             }
         }
@@ -2813,6 +2980,46 @@
         return false;
     }
 
+    function cancelAftContainerScanQueue() {
+        containerScanQueueGeneration++;
+        if (containerScanQueueTimer) {
+            window.clearTimeout(containerScanQueueTimer);
+            containerScanQueueTimer = null;
+        }
+        containerScanQueue = [];
+        containerScanQueueActiveJob = null;
+        containerScanQueueSawBusy = false;
+        containerScanQueueDispatchStartedAt = 0;
+        recentQueuedContainerCaptures = {};
+    }
+
+    function isAftContainerScanJobCurrent(job) {
+        var session = getAftSession();
+        var destination = trimText(session && session.destinationScannableId).toLowerCase();
+        return !!job && job.generation === containerScanQueueGeneration &&
+            !!destination && destination === job.destination &&
+            destination === trimText(activeAgeDropZoneText).toLowerCase() &&
+            !isActiveAftStep(AFT_STEP_SOURCE) && !isActiveAftStep(AFT_STEP_DESTINATION);
+    }
+
+    function installAftContainerQueueResetHook() {
+        var handler;
+        var original;
+        try {
+            handler = PAGE_WINDOW.aft && PAGE_WINDOW.aft.register && PAGE_WINDOW.aft.register('ResetSession', 'handler');
+            if (!handler || typeof handler.handleHotKeyR !== 'function' ||
+                    handler.handleHotKeyR.__aftContainerQueueReset) {
+                return;
+            }
+            original = handler.handleHotKeyR;
+            handler.handleHotKeyR = function () {
+                cancelAftContainerScanQueue();
+                return original.apply(this, arguments);
+            };
+            handler.handleHotKeyR.__aftContainerQueueReset = true;
+        } catch (e) {}
+    }
+
     function scheduleAftContainerScanQueue(delay) {
         if (containerScanQueueTimer) {
             return;
@@ -2843,6 +3050,10 @@
         if (!containerScanQueue.length) {
             containerScanQueueActiveJob = null;
             containerScanQueueSawBusy = false;
+            return;
+        }
+        if (!isAftContainerScanJobCurrent(containerScanQueue[0])) {
+            cancelAftContainerScanQueue();
             return;
         }
 
@@ -2906,6 +3117,8 @@
             containerId: normalizedContainerId,
             entryId: entryId,
             signature: signature,
+            destination: trimText(activeAgeDropZoneText).toLowerCase(),
+            generation: containerScanQueueGeneration,
             queuedAt: now()
         });
         scheduleAftContainerScanQueue(0);
@@ -2956,6 +3169,7 @@
         var delegator;
         var originalHandleScan;
         var wrappedHandleScan;
+        installAftContainerQueueResetHook();
         try {
             delegator = PAGE_WINDOW.aft && PAGE_WINDOW.aft.registry ? PAGE_WINDOW.aft.registry.eventDelegator : null;
             if (!delegator || typeof delegator.handleScan !== 'function') {
@@ -3153,22 +3367,13 @@
             return false;
         }
         box.classList.toggle('aft-scan-history-collapse-preview', active);
-        list.style.setProperty('--aft-scan-history-collapse-opacity', active ? '0' : '1');
-        list.style.setProperty('--aft-scan-history-collapse-offset', active ? '16px' : '0px');
-        list.style.setProperty('--aft-scan-history-collapse-scale', active ? '0.96' : '1');
         return active;
     }
 
     function clearScanHistoryCollapsePreview() {
         var box = getCachedElement('aft-scan-history-box');
-        var list = getCachedElement('aft-scan-history-list');
         if (box) {
             box.classList.remove('aft-scan-history-collapse-preview');
-        }
-        if (list) {
-            list.style.removeProperty('--aft-scan-history-collapse-opacity');
-            list.style.removeProperty('--aft-scan-history-collapse-offset');
-            list.style.removeProperty('--aft-scan-history-collapse-scale');
         }
     }
 
@@ -3176,12 +3381,12 @@
         return clampScanHistoryHeight(storageGet(STORAGE_KEY_SCAN_HISTORY_HEIGHT, SCAN_HISTORY_DEFAULT_HEIGHT));
     }
 
-    function applyScanHistoryHeight(value, persist) {
+    function applyScanHistoryHeight(value, persist, maximumHeight) {
         var box = getCachedElement('aft-scan-history-box');
         var list = getCachedElement('aft-scan-history-list');
         var handle = getCachedElement('aft-scan-history-resize-handle');
         var filterPanel = getCachedElement('aft-scan-history-filter-panel');
-        var maxHeight = getScanHistoryMaxHeight();
+        var maxHeight = isFinite(maximumHeight) ? Number(maximumHeight) : getScanHistoryMaxHeight();
         var numericValue = Math.round(Number(value));
         var height;
         if (!isFinite(numericValue)) {
@@ -3190,7 +3395,6 @@
         height = Math.max(SCAN_HISTORY_MIN_HEIGHT, Math.min(maxHeight, numericValue));
         updateQuickBoxHistoryClearance(height, maxHeight);
         if (box) {
-            box.style.setProperty('--aft-scan-history-list-height', height + 'px');
             box.classList.toggle('aft-scan-history-content-hidden', height <= 0);
         }
         if (filterPanel) {
@@ -3228,6 +3432,10 @@
         var dragDistance = 0;
         var collapseThreshold;
         var collapsePreviewActive = false;
+        var maximumHeight;
+        var resizeFrame = null;
+        var pendingClientY = null;
+        var lastPointerY = event.clientY;
         var isHeaderDrag = !!(handle.classList && handle.classList.contains('aft-scan-history-header'));
         var dragShield = document.createElement('div');
 
@@ -3237,6 +3445,7 @@
 
         event.preventDefault();
         event.stopPropagation();
+        startHeight = list.getBoundingClientRect().height;
         if (list.__aftHeightAnimationTimer) {
             window.clearTimeout(list.__aftHeightAnimationTimer);
             list.__aftHeightAnimationTimer = null;
@@ -3250,13 +3459,12 @@
         if (scanHistoryFullscreen) {
             setScanHistoryFullscreen(false);
             startHeight = getScanHistoryMaxHeight();
-            applyScanHistoryHeight(startHeight, false);
-        } else {
-            startHeight = list.getBoundingClientRect().height;
-            if (!isFinite(startHeight)) {
-                startHeight = getStoredScanHistoryHeight();
-            }
         }
+        maximumHeight = getScanHistoryMaxHeight();
+        if (!isFinite(startHeight)) {
+            startHeight = getStoredScanHistoryHeight();
+        }
+        startHeight = applyScanHistoryHeight(startHeight, false, maximumHeight);
         currentHeight = startHeight;
         rawHeight = startHeight;
         collapseThreshold = getScanHistoryCollapseThreshold();
@@ -3282,23 +3490,38 @@
             }
             moveEvent.preventDefault();
             currentY = moveEvent.clientY;
-            if (currentY <= 0 && lastClientY > viewportHeight * 0.75) {
+            if (currentY <= 0 && lastPointerY > viewportHeight * 0.75) {
                 currentY = viewportHeight;
             }
             currentY = Math.max(0, Math.min(viewportHeight, currentY));
-            dragDistance += Math.abs(currentY - lastClientY);
+            dragDistance += Math.abs(currentY - lastPointerY);
+            lastPointerY = currentY;
+            pendingClientY = currentY;
+            if (resizeFrame === null) {
+                resizeFrame = window.requestAnimationFrame(updateResizeFrame);
+            }
+        }
+
+        function updateResizeFrame() {
+            var currentY = pendingClientY;
+            resizeFrame = null;
+            pendingClientY = null;
+            if (currentY === null) {
+                return;
+            }
             if (currentY <= fullscreenThreshold && lastClientY <= fullscreenThreshold + 48) {
                 if (!scanHistoryFullscreen) {
                     setScanHistoryFullscreen(true);
                 }
-                currentHeight = getScanHistoryMaxHeight();
+                currentHeight = maximumHeight;
                 rawHeight = currentHeight;
                 lastClientY = currentY;
                 return;
             }
             if (scanHistoryFullscreen) {
                 setScanHistoryFullscreen(false);
-                currentHeight = getScanHistoryMaxHeight();
+                maximumHeight = getScanHistoryMaxHeight();
+                currentHeight = maximumHeight;
                 rawHeight = currentHeight;
                 lastClientY = fullscreenThreshold;
             }
@@ -3311,34 +3534,44 @@
                     }
                     list.style.transition = 'height 220ms ' + UI_ANIMATION_EASING +
                         ', opacity 180ms ease, transform 180ms ease';
+                    collapsePreviewActive = setScanHistoryCollapsePreview(rawHeight, collapseThreshold);
+                    currentHeight = applyScanHistoryHeight(0, false, maximumHeight);
                 }
-                collapsePreviewActive = setScanHistoryCollapsePreview(rawHeight, collapseThreshold);
-                currentHeight = applyScanHistoryHeight(0, false);
             } else {
                 if (collapsePreviewActive) {
                     clearScanHistoryCollapsePreview();
-                    list.style.transition = 'height 220ms ' + UI_ANIMATION_EASING +
-                        ', opacity 180ms ease, transform 180ms ease';
-                    list.__aftCollapsePreviewTransitionTimer = window.setTimeout(function () {
-                        if (!collapsePreviewActive) {
-                            list.style.transition = 'none';
-                        }
-                        list.__aftCollapsePreviewTransitionTimer = null;
-                    }, 230);
+                    list.style.transition = 'opacity 180ms ease, transform 180ms ease';
                 }
                 collapsePreviewActive = false;
-                currentHeight = applyScanHistoryHeight(rawHeight, false);
+                currentHeight = applyScanHistoryHeight(rawHeight, false, maximumHeight);
             }
             lastClientY = currentY;
+        }
+
+        function refreshResizeBounds() {
+            viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+            fullscreenThreshold = panel ? panel.getBoundingClientRect().top + 8 : 8;
+            maximumHeight = getScanHistoryMaxHeight();
+            collapseThreshold = getScanHistoryCollapseThreshold();
+            pendingClientY = Math.max(0, Math.min(viewportHeight, lastPointerY));
+            if (resizeFrame === null) {
+                resizeFrame = window.requestAnimationFrame(updateResizeFrame);
+            }
         }
 
         function finishResize(endEvent) {
             if (endEvent && endEvent.pointerId !== pointerId) {
                 return;
             }
+            if (resizeFrame !== null) {
+                window.cancelAnimationFrame(resizeFrame);
+                resizeFrame = null;
+            }
+            updateResizeFrame();
             window.removeEventListener('pointermove', onPointerMove, true);
             window.removeEventListener('pointerup', finishResize, true);
             window.removeEventListener('pointercancel', finishResize, true);
+            window.removeEventListener('resize', refreshResizeBounds, false);
             if (root && root.classList) {
                 root.classList.remove('aft-resizing-scan-history');
             }
@@ -3354,7 +3587,7 @@
             }
             if (!scanHistoryFullscreen && isHeaderDrag && dragDistance < 4) {
                 clearScanHistoryCollapsePreview();
-                applyScanHistoryHeight(startHeight, false);
+                applyScanHistoryHeight(startHeight, false, maximumHeight);
                 list.style.transition = '';
                 toggleScanHistoryCollapsed();
                 queueLayoutUpdate();
@@ -3362,13 +3595,13 @@
                 if (list.__aftHeightAnimationTimer) {
                     window.clearTimeout(list.__aftHeightAnimationTimer);
                 }
-                currentHeight = applyScanHistoryHeight(0, true);
+                currentHeight = applyScanHistoryHeight(0, true, maximumHeight);
                 clearScanHistoryCollapsePreview();
                 list.style.transition = '';
                 queueLayoutUpdate();
             } else if (!scanHistoryFullscreen) {
                 clearScanHistoryCollapsePreview();
-                applyScanHistoryHeight(currentHeight, true);
+                applyScanHistoryHeight(currentHeight, true, maximumHeight);
                 list.style.transition = '';
                 queueLayoutUpdate();
             } else {
@@ -3381,6 +3614,7 @@
         window.addEventListener('pointermove', onPointerMove, true);
         window.addEventListener('pointerup', finishResize, true);
         window.addEventListener('pointercancel', finishResize, true);
+        window.addEventListener('resize', refreshResizeBounds, false);
     }
 
     function resizeScanHistoryWithKeyboard(event) {
@@ -5230,15 +5464,15 @@ html.aft-resizing-scan-history * {
   cursor: default;
 }
 .aft-scan-history-list {
-  height: var(--aft-scan-history-list-height, 220px);
+  height: 220px;
   min-height: 0;
   max-height: none;
   overflow: auto;
   scrollbar-width: thin;
 }
 .aft-scan-history-box.aft-scan-history-collapse-preview .aft-scan-history-list {
-  opacity: var(--aft-scan-history-collapse-opacity, 1);
-  transform: translateY(var(--aft-scan-history-collapse-offset, 0)) scaleY(var(--aft-scan-history-collapse-scale, 1));
+  opacity: 0;
+  transform: translateY(16px) scaleY(0.96);
   transform-origin: bottom center;
 }
 html.aft-scan-history-fullscreen,
@@ -5372,6 +5606,8 @@ html.aft-scan-history-fullscreen #aft-scan-buttons-panel {
   border-top: 1px solid #e1e8e3;
   min-height: 38px;
   font-size: 14px;
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 24px;
 }
 .aft-scan-history-row > div {
   min-width: 0;
@@ -5430,6 +5666,9 @@ html.aft-scan-history-fullscreen #aft-scan-buttons-panel {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  direction: rtl;
+  unicode-bidi: isolate;
+  text-align: left;
 }
 .aft-scan-history-container-links {
   display: inline-flex;
@@ -12089,7 +12328,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             quickBox.style.maxHeight = 'none';
         }
         historyList = getCachedElement('aft-scan-history-list');
-        if (historyList) {
+        if (historyList && !document.documentElement.classList.contains('aft-resizing-scan-history')) {
             historyHeight = parseFloat(historyList.style.height);
             if (!isFinite(historyHeight)) {
                 historyHeight = getStoredScanHistoryHeight();
@@ -12865,6 +13104,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
 
     function clearAftMoveSessionValues() {
         var session = getAftSession();
+        cancelAftContainerScanQueue();
         if (!session) {
             return;
         }
@@ -12897,6 +13137,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
 
     function triggerAftResetSession() {
         var handler;
+        cancelAftContainerScanQueue();
         try {
             if (PAGE_WINDOW.aft && PAGE_WINDOW.aft.register) {
                 handler = PAGE_WINDOW.aft.register('ResetSession', 'handler');
@@ -13274,6 +13515,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
     }
 
     function resetAftMoveSessionForDropZone() {
+        cancelAftContainerScanQueue();
         if (isActiveAftStep(AFT_STEP_SOURCE)) {
             return false;
         }
@@ -13776,12 +14018,6 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             return false;
         }
         try {
-            if (panel && (el === panel || panel.contains(el))) {
-                if (stepsContainer && (el === stepsContainer || stepsContainer.contains(el))) {
-                    return false;
-                }
-                return true;
-            }
             if (marker && (el === marker || marker.contains(el))) {
                 return true;
             }
@@ -13798,6 +14034,12 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
                 return true;
             }
             if (latestQuantityBox && (el === latestQuantityBox || latestQuantityBox.contains(el))) {
+                return true;
+            }
+            if (panel && (el === panel || panel.contains(el))) {
+                if (stepsContainer && (el === stepsContainer || stepsContainer.contains(el))) {
+                    return false;
+                }
                 return true;
             }
         } catch (e) {}
