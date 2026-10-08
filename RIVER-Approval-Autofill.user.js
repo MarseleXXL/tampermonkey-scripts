@@ -4,8 +4,8 @@
 // @version      1.13
 // @description  Automatically fills selected RIVER workflow fields.
 // @author       aolenche
-// @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/RIVER-Approval-Autofill.js
-// @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/RIVER-Approval-Autofill.js
+// @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/RIVER-Approval-Autofill.user.js
+// @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/RIVER-Approval-Autofill.user.js
 // @match        https://river-dub.amazon.com/*/workflows*
 // @match        https://t.corp.amazon.com/*
 // @run-at       document-start
