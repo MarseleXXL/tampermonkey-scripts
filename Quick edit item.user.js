@@ -5,8 +5,8 @@
 // @description  Changes FCResearch inventory items to Sellable, Defective or Pending Research.
 // @description:pl Zmienia pozycje Inwentarza FCResearch na Sellable, Defective lub Pending Research.
 // @author       aolenche
-// @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Quick edit item.user.js
-// @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Quick edit item.user.js
+// @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Quick_edit_item.user.js
+// @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Quick-edit-item.user.js
 // @include      *://qi-fcresearch-eu.corp.amazon.com/WRO1/results?s=*
 // @include      *://fcresearch-eu.aka.amazon.com/WRO1/results?s=*
 // @include      *://aft-qt-eu.aka.amazon.com/app/edititems*
