@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Badge photos
 // @namespace    http://tampermonkey.net/
-// @version      1.00
+// @version      1.02
 // @author       aolenche
 // @description  Replaces the employee QR code with the employee badge photo in FCResearch.
 // @match        *://fcresearch-eu.aka.amazon.com/*
@@ -21,6 +21,11 @@
     const EMPLOYEE_TABLE_SELECTOR = 'table.a-keyvalue[data-row-id]';
     const EMPLOYEE_PHOTO_SELECTOR = '.a-column.a-span4 img';
     const PHOTO_URL = 'https://badgephotos.corp.amazon.com/?uid=';
+    const HISTORY_HEADERS = new Map([
+        ['table-inventory-history', 'inventory-history-person'],
+        ['table-container-history', 'container-history-moved-by']
+    ]);
+    const HISTORY_SELECTOR = '#table-inventory-history, #table-container-history';
     const pendingSections = new Set();
     const photoCache = new Map();
     let flushScheduled = false;
@@ -35,9 +40,10 @@
         const link = node?.closest?.('a[href]');
         const cell = link?.closest('td');
         const table = cell?.closest('table');
-        if (table?.id !== 'table-inventory-history') return null;
+        const headerId = HISTORY_HEADERS.get(table?.id);
+        if (!headerId) return null;
 
-        const header = table.tHead?.querySelector('[id="inventory-history-person"]');
+        const header = table.tHead?.querySelector(`[id="${headerId}"]`);
         if (!header || cell.cellIndex !== header.cellIndex) return null;
 
         const login = link.textContent.trim();
@@ -67,23 +73,36 @@
         if (photoCache.has(login)) return photoCache.get(login);
 
         const image = document.createElement('img');
-        const entry = { login, image, state: 'loading' };
+        const entry = { login, image, state: 'loading', retries: 0 };
         photoCache.set(login, entry);
         image.alt = `Employee photo: ${login}`;
         image.loading = 'eager';
         image.decoding = 'async';
 
         image.addEventListener('load', async () => {
+            const loadedSource = image.src;
             try {
                 await image.decode();
             } catch {}
 
-            if (entry.state !== 'loading') return;
+            if (entry.state !== 'loading' || image.src !== loadedSource) return;
             entry.state = 'ready';
             renderCachedPhoto(entry);
         });
 
         image.addEventListener('error', () => {
+            if (entry.state !== 'loading') return;
+            if (entry.retries === 0) {
+                entry.retries = 1;
+                entry.state = 'retrying';
+                renderCachedPhoto(entry);
+                setTimeout(() => {
+                    entry.state = 'loading';
+                    image.src = PHOTO_URL + encodeURIComponent(login) + `&_badge_retry=${Date.now()}`;
+                }, 1000);
+                return;
+            }
+
             entry.state = 'error';
             renderCachedPhoto(entry);
         });
@@ -94,23 +113,25 @@
 
     function preloadHistoryPhotos() {
         preloadScheduled = false;
-        const table = document.querySelector('#table-inventory-history');
-        const header = table?.tHead?.querySelector('[id="inventory-history-person"]');
-        if (!header) return;
+        for (const table of document.querySelectorAll(HISTORY_SELECTOR)) {
+            const headerId = HISTORY_HEADERS.get(table.id);
+            const header = table.tHead?.querySelector(`[id="${headerId}"]`);
+            if (!header) continue;
 
-        for (const row of table.tBodies[0]?.rows || []) {
-            const cell = row.cells[header.cellIndex];
-            for (const link of cell?.querySelectorAll('a[href]') || []) {
-                const employee = getHistoryLogin(link);
-                if (employee) getCachedPhoto(employee.login);
+            for (const row of table.tBodies[0]?.rows || []) {
+                const cell = row.cells[header.cellIndex];
+                for (const link of cell?.querySelectorAll('a[href]') || []) {
+                    const employee = getHistoryLogin(link);
+                    if (employee) getCachedPhoto(employee.login);
+                }
             }
         }
     }
 
     function scheduleHistoryPreload(node) {
         const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-        const inHistory = element?.closest('#table-inventory-history');
-        const hasHistory = node?.querySelector?.('#table-inventory-history');
+        const inHistory = element?.closest(HISTORY_SELECTOR);
+        const hasHistory = node?.querySelector?.(HISTORY_SELECTOR);
         if ((!inHistory && !hasHistory) || preloadScheduled) return;
 
         preloadScheduled = true;
