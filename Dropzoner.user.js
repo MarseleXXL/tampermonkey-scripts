@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Dropzoner
 // @namespace    aft-move-container-auto-tools-age
-// @version      1.03
+// @version      1.04
 // @author       aolenche
 // @description  Twórz własną listę Drop-Zon i porządkuj je według grup. Sprawdzaj wiek oraz ilość towaru w kontenerach. Przeglądaj historię skanowań.
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Dropzoner.png
@@ -174,11 +174,14 @@
     var xlsxLibraryLoading = false;
     var scanResultAudioPlayers = {};
     var lastScanResultSoundEntryId = '';
+    var latestScanResultSoundEntryId = '';
     var scanResultSoundQueue = [];
     var scanResultSoundActiveJob = null;
     var scanResultSoundTimer = null;
     var scanResultSoundBlocked = false;
     var scanResultSoundGestureInstalled = false;
+    var cancelActivePointerDrag = null;
+    var dragCancelContextMenuUntil = 0;
     var nativeAftSoundBlockerInstalled = false;
     var bootRevealTimer = null;
     var userProfileSyncInitialized = false;
@@ -1419,6 +1422,7 @@
             seenKeys[entryKey] = true;
             scanHistoryEntries.push(normalized);
         }
+        latestScanResultSoundEntryId = scanHistoryEntries.length ? scanHistoryEntries[0].id : '';
         if (changed) {
             saveScanHistory();
         }
@@ -1709,7 +1713,7 @@
             player = new Audio(createScanResultSoundWavUrl(soundType));
             player.preload = 'auto';
             player.addEventListener('ended', function () {
-                if (scanResultSoundActiveJob && scanResultSoundActiveJob.player === player) {
+                if (player.ended !== false && scanResultSoundActiveJob && scanResultSoundActiveJob.player === player) {
                     finishScanResultSound(scanResultSoundActiveJob);
                 }
             });
@@ -1775,6 +1779,20 @@
         if (scanResultSoundTimer) {
             window.clearTimeout(scanResultSoundTimer);
             scanResultSoundTimer = null;
+        }
+    }
+
+    function replaceScanResultSound(entryId) {
+        var job = scanResultSoundActiveJob;
+        clearScanResultSoundTimer();
+        scanResultSoundActiveJob = null;
+        scanResultSoundQueue.length = 0;
+        latestScanResultSoundEntryId = entryId;
+        if (job && job.player) {
+            try {
+                job.player.pause();
+                job.player.currentTime = 0;
+            } catch (e) {}
         }
     }
 
@@ -1879,6 +1897,9 @@
     function playScanResultSound(entry) {
         var volume = getAgeAlarmVolumePercent() / 100;
         var soundType = getScanResultSoundType(entry);
+        if (latestScanResultSoundEntryId && entry && entry.id !== latestScanResultSoundEntryId) {
+            return;
+        }
         if (!soundType || entry.id === lastScanResultSoundEntryId) {
             return;
         }
@@ -1888,6 +1909,7 @@
         if (scanResultSoundQueue.some(function (job) { return job.entryId === entry.id; })) {
             return;
         }
+        scanResultSoundQueue.length = 0;
         scanResultSoundQueue.push({ entryId: entry.id, soundType: soundType, retries: 0, attempt: 0 });
         processScanResultSoundQueue();
     }
@@ -2930,6 +2952,7 @@
         var i;
 
         invalidateRestoredScanHistoryClearRedo();
+        replaceScanResultSound(entryId);
         for (i = scanHistoryEntries.length - 1; i >= 0; i--) {
             if (trimText(scanHistoryEntries[i].containerId) === normalizedContainerId) {
                 scanHistoryEntries.splice(i, 1);
@@ -3338,7 +3361,7 @@
     function getScanHistoryCollapseThreshold() {
         var list = getCachedElement('aft-scan-history-list');
         var columns;
-        var rows;
+        var row;
         var rowHeight = SCAN_HISTORY_COLLAPSE_FALLBACK_ROW_HEIGHT;
         var height = 0;
         var i;
@@ -3346,17 +3369,216 @@
             return SCAN_HISTORY_COLLAPSE_ROW_COUNT * rowHeight;
         }
         columns = list.querySelector('.aft-scan-history-columns');
-        rows = list.querySelectorAll('.aft-scan-history-row');
+        row = list.querySelector('.aft-scan-history-row');
         if (columns) {
             height += getElementOuterHeight(columns);
         }
-        if (rows.length) {
-            rowHeight = getElementOuterHeight(rows[0]) || rowHeight;
+        if (row) {
+            rowHeight = getElementOuterHeight(row) || rowHeight;
         }
         for (i = 0; i < SCAN_HISTORY_COLLAPSE_ROW_COUNT; i++) {
-            height += rows[i] ? (getElementOuterHeight(rows[i]) || rowHeight) : rowHeight;
+            height += row ? (getElementOuterHeight(row) || rowHeight) : rowHeight;
+            row = row ? row.nextElementSibling : null;
         }
         return Math.max(rowHeight, Math.min(getScanHistoryMaxHeight(), Math.round(height)));
+    }
+
+    function clearScanHistoryCollapseVisual(list) {
+        var visual = list && list.__aftCollapseVisual;
+        var reveal = list && list.__aftRevealAnimation;
+        if (reveal) {
+            reveal.cancel();
+            reveal.__aftCleanup();
+        }
+        if (!visual) {
+            return;
+        }
+        visual.animation.cancel();
+        visual.cleanup();
+    }
+
+    function animateScanHistoryVisual(list, options) {
+        var rect;
+        var visual;
+        var children;
+        var low;
+        var high;
+        var middle;
+        var rowRect;
+        var copied = 0;
+        var panel = getCachedElement('aft-scan-buttons-panel');
+        var animation;
+        var owner;
+        var listRect;
+        var previousClip;
+        var keyframes;
+        var fromRect;
+        options = options || {};
+        if (!list || !panel || typeof list.animate !== 'function') {
+            return;
+        }
+        clearScanHistoryCollapseVisual(list);
+        owner = options.box || list;
+        rect = owner.getBoundingClientRect();
+        listRect = list.getBoundingClientRect();
+        if (rect.height < 1 || rect.width < 1) {
+            return;
+        }
+        visual = document.createElement('div');
+        visual.className = 'aft-scan-history-collapse-visual';
+        visual.setAttribute('aria-hidden', 'true');
+        visual.setAttribute('inert', '');
+        visual.style.left = rect.left + 'px';
+        visual.style.top = rect.top + 'px';
+        visual.style.width = rect.width + 'px';
+        visual.style.height = rect.height + 'px';
+        if (owner !== list) {
+            visual.style.borderRadius = window.getComputedStyle(owner).borderRadius;
+            visual.style.background = window.getComputedStyle(owner).backgroundColor;
+            visual.style.boxShadow = window.getComputedStyle(owner).boxShadow;
+        }
+        children = list.children;
+
+        function copyVisibleChild(child, clip) {
+            var copy;
+            var ids;
+            var style;
+            if (!child || copied >= 48) {
+                return;
+            }
+            rowRect = child.getBoundingClientRect();
+            clip = clip || listRect;
+            if (rowRect.bottom <= clip.top || rowRect.top >= clip.bottom) {
+                return;
+            }
+            copy = child.cloneNode(true);
+            copy.removeAttribute('id');
+            ids = copy.querySelectorAll('[id]');
+            for (var i = 0; i < ids.length; i++) {
+                ids[i].removeAttribute('id');
+            }
+            copy.style.position = 'absolute';
+            copy.style.top = (rowRect.top - rect.top) + 'px';
+            copy.style.left = (rowRect.left - rect.left) + 'px';
+            copy.style.width = rowRect.width + 'px';
+            copy.style.height = rowRect.height + 'px';
+            copy.style.margin = '0';
+            copy.style.contentVisibility = 'visible';
+            copy.style.transition = 'none';
+            copy.style.clipPath = 'inset(' + Math.max(0, clip.top - rowRect.top) + 'px 0 ' +
+                Math.max(0, rowRect.bottom - clip.bottom) + 'px 0)';
+            style = window.getComputedStyle(child);
+            copy.style.setProperty('background', style.backgroundColor, 'important');
+            visual.appendChild(copy);
+            copied++;
+        }
+
+        if (owner !== list) {
+            copyVisibleChild(owner.querySelector('.aft-scan-history-header'), rect);
+            copyVisibleChild(getCachedElement('aft-scan-history-filter-panel'), rect);
+        }
+        copyVisibleChild(children[0]);
+        low = 1;
+        high = children.length;
+        while (low < high) {
+            middle = Math.floor((low + high) / 2);
+            rowRect = children[middle].getBoundingClientRect();
+            if (rowRect.bottom <= listRect.top) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        for (var index = low; index < children.length && copied < 48; index++) {
+            if (children[index].getBoundingClientRect().top >= listRect.bottom) {
+                break;
+            }
+            copyVisibleChild(children[index]);
+        }
+        if (!copied) {
+            return;
+        }
+        panel.appendChild(visual);
+        previousClip = owner.style.clipPath;
+        if (options.reveal) {
+            owner.style.clipPath = 'inset(100%)';
+        }
+        function cleanup() {
+            if (visual.parentNode) {
+                visual.parentNode.removeChild(visual);
+            }
+            if (list.__aftCollapseVisual && list.__aftCollapseVisual.element === visual) {
+                if (options.reveal) {
+                    owner.style.clipPath = previousClip;
+                }
+                list.__aftCollapseVisual = null;
+            }
+        }
+        try {
+            keyframes = [
+                { transform: 'translateY(0) scaleY(1)', opacity: 1 },
+                { transform: 'translateY(8px) scaleY(0.55)', opacity: 0.8, offset: 0.55 },
+                { transform: 'translateY(20px) scaleY(0.06)', opacity: 0 }
+            ];
+            if (options.reveal) {
+                keyframes.reverse();
+                keyframes[1].offset = 0.45;
+            }
+            fromRect = options.fromRect;
+            if (fromRect) {
+                visual.style.transformOrigin = 'top left';
+                keyframes = [
+                    { transform: 'translate(' + (fromRect.left - rect.left) + 'px,' +
+                        (fromRect.top - rect.top) + 'px) scale(' +
+                        Math.max(0.01, fromRect.width / rect.width) + ',' +
+                        Math.max(0.01, fromRect.height / rect.height) + ')', opacity: 0.65 },
+                    { transform: 'translate(0,0) scale(1,1)', opacity: 1 }
+                ];
+            }
+            animation = visual.animate(keyframes, { duration: 260, easing: UI_ANIMATION_EASING, fill: 'forwards' });
+            animation.onfinish = cleanup;
+            animation.oncancel = cleanup;
+            list.__aftCollapseVisual = { element: visual, animation: animation, cleanup: cleanup };
+        } catch (e) {
+            if (options.reveal) {
+                owner.style.clipPath = previousClip;
+            }
+            cleanup();
+        }
+    }
+
+    function animateScanHistoryCollapse(list) {
+        animateScanHistoryVisual(list);
+    }
+
+    function animateScanHistoryReveal(list) {
+        var previousOrigin;
+        var previousWillChange;
+        var animation;
+        if (!list || typeof list.animate !== 'function') {
+            return;
+        }
+        clearScanHistoryCollapseVisual(list);
+        previousOrigin = list.style.transformOrigin;
+        previousWillChange = list.style.willChange;
+        list.style.transformOrigin = 'bottom center';
+        list.style.willChange = 'transform, opacity';
+        animation = list.animate([
+            { transform: 'translateY(20px) scaleY(0.06)', opacity: 0 },
+            { transform: 'translateY(8px) scaleY(0.55)', opacity: 0.8, offset: 0.45 },
+            { transform: 'translateY(0) scaleY(1)', opacity: 1 }
+        ], { duration: 260, easing: UI_ANIMATION_EASING });
+        function cleanup() {
+            if (list.__aftRevealAnimation === animation) {
+                list.style.transformOrigin = previousOrigin;
+                list.style.willChange = previousWillChange;
+                list.__aftRevealAnimation = null;
+            }
+        }
+        list.__aftRevealAnimation = animation;
+        animation.__aftCleanup = cleanup;
+        animation.onfinish = cleanup;
+        animation.oncancel = cleanup;
     }
 
     function setScanHistoryCollapsePreview(rawHeight, threshold) {
@@ -3370,10 +3592,13 @@
         return active;
     }
 
-    function clearScanHistoryCollapsePreview() {
+    function clearScanHistoryCollapsePreview(keepVisual) {
         var box = getCachedElement('aft-scan-history-box');
         if (box) {
             box.classList.remove('aft-scan-history-collapse-preview');
+        }
+        if (!keepVisual) {
+            clearScanHistoryCollapseVisual(getCachedElement('aft-scan-history-list'));
         }
     }
 
@@ -3438,6 +3663,10 @@
         var lastPointerY = event.clientY;
         var isHeaderDrag = !!(handle.classList && handle.classList.contains('aft-scan-history-header'));
         var dragShield = document.createElement('div');
+        var previousHandleCursor = handle.style.cursor;
+        var previousHandleUserSelect = handle.style.userSelect;
+        var initialFullscreen = scanHistoryFullscreen;
+        var cancelled = false;
 
         if (!list || (event.button !== undefined && event.button !== 0)) {
             return;
@@ -3445,6 +3674,9 @@
 
         event.preventDefault();
         event.stopPropagation();
+        if (cancelActivePointerDrag) {
+            cancelActivePointerDrag();
+        }
         startHeight = list.getBoundingClientRect().height;
         if (list.__aftHeightAnimationTimer) {
             window.clearTimeout(list.__aftHeightAnimationTimer);
@@ -3457,7 +3689,7 @@
         list.style.transition = 'none';
         clearScanHistoryCollapsePreview();
         if (scanHistoryFullscreen) {
-            setScanHistoryFullscreen(false);
+            setScanHistoryFullscreen(false, false);
             startHeight = getScanHistoryMaxHeight();
         }
         maximumHeight = getScanHistoryMaxHeight();
@@ -3471,6 +3703,8 @@
         if (root && root.classList) {
             root.classList.add('aft-resizing-scan-history');
         }
+        handle.style.cursor = 'ns-resize';
+        handle.style.userSelect = 'none';
         dragShield.setAttribute('aria-hidden', 'true');
         dragShield.style.position = 'fixed';
         dragShield.style.inset = '0';
@@ -3478,6 +3712,7 @@
         dragShield.style.background = 'transparent';
         dragShield.style.cursor = 'ns-resize';
         dragShield.style.touchAction = 'none';
+        dragShield.style.userSelect = 'none';
         document.body.appendChild(dragShield);
         try {
             handle.setPointerCapture(pointerId);
@@ -3532,18 +3767,21 @@
                         window.clearTimeout(list.__aftCollapsePreviewTransitionTimer);
                         list.__aftCollapsePreviewTransitionTimer = null;
                     }
-                    list.style.transition = 'height 220ms ' + UI_ANIMATION_EASING +
-                        ', opacity 180ms ease, transform 180ms ease';
+                    list.style.transition = 'none';
+                    animateScanHistoryCollapse(list);
                     collapsePreviewActive = setScanHistoryCollapsePreview(rawHeight, collapseThreshold);
                     currentHeight = applyScanHistoryHeight(0, false, maximumHeight);
                 }
             } else {
                 if (collapsePreviewActive) {
                     clearScanHistoryCollapsePreview();
-                    list.style.transition = 'opacity 180ms ease, transform 180ms ease';
+                    list.style.transition = 'none';
+                }
+                currentHeight = applyScanHistoryHeight(rawHeight, false, maximumHeight);
+                if (collapsePreviewActive) {
+                    animateScanHistoryReveal(list);
                 }
                 collapsePreviewActive = false;
-                currentHeight = applyScanHistoryHeight(rawHeight, false, maximumHeight);
             }
             lastClientY = currentY;
         }
@@ -3567,14 +3805,22 @@
                 window.cancelAnimationFrame(resizeFrame);
                 resizeFrame = null;
             }
-            updateResizeFrame();
+            if (!cancelled) {
+                updateResizeFrame();
+            }
             window.removeEventListener('pointermove', onPointerMove, true);
             window.removeEventListener('pointerup', finishResize, true);
-            window.removeEventListener('pointercancel', finishResize, true);
+            window.removeEventListener('pointercancel', cancelResize, true);
             window.removeEventListener('resize', refreshResizeBounds, false);
+            window.removeEventListener('blur', cancelResize, false);
+            if (cancelActivePointerDrag === cancelResize) {
+                cancelActivePointerDrag = null;
+            }
             if (root && root.classList) {
                 root.classList.remove('aft-resizing-scan-history');
             }
+            handle.style.cursor = previousHandleCursor;
+            handle.style.userSelect = previousHandleUserSelect;
             if (dragShield.parentNode) {
                 dragShield.parentNode.removeChild(dragShield);
             }
@@ -3585,7 +3831,14 @@
                 window.clearTimeout(list.__aftCollapsePreviewTransitionTimer);
                 list.__aftCollapsePreviewTransitionTimer = null;
             }
-            if (!scanHistoryFullscreen && isHeaderDrag && dragDistance < 4) {
+            if (cancelled) {
+                clearScanHistoryCollapsePreview();
+                list.style.transition = 'none';
+                setScanHistoryFullscreen(initialFullscreen, false);
+                applyScanHistoryHeight(startHeight, false, maximumHeight);
+                list.style.transition = '';
+                queueLayoutUpdate();
+            } else if (!scanHistoryFullscreen && isHeaderDrag && dragDistance < 4) {
                 clearScanHistoryCollapsePreview();
                 applyScanHistoryHeight(startHeight, false, maximumHeight);
                 list.style.transition = '';
@@ -3596,25 +3849,32 @@
                     window.clearTimeout(list.__aftHeightAnimationTimer);
                 }
                 currentHeight = applyScanHistoryHeight(0, true, maximumHeight);
-                clearScanHistoryCollapsePreview();
+                clearScanHistoryCollapsePreview(true);
                 list.style.transition = '';
                 queueLayoutUpdate();
             } else if (!scanHistoryFullscreen) {
-                clearScanHistoryCollapsePreview();
+                clearScanHistoryCollapsePreview(true);
                 applyScanHistoryHeight(currentHeight, true, maximumHeight);
                 list.style.transition = '';
                 queueLayoutUpdate();
             } else {
-                clearScanHistoryCollapsePreview();
+                clearScanHistoryCollapsePreview(true);
                 list.style.transition = '';
                 queueLayoutUpdate();
             }
         }
 
+        function cancelResize() {
+            cancelled = true;
+            finishResize();
+        }
+
+        cancelActivePointerDrag = cancelResize;
         window.addEventListener('pointermove', onPointerMove, true);
         window.addEventListener('pointerup', finishResize, true);
-        window.addEventListener('pointercancel', finishResize, true);
+        window.addEventListener('pointercancel', cancelResize, true);
         window.addEventListener('resize', refreshResizeBounds, false);
+        window.addEventListener('blur', cancelResize, false);
     }
 
     function resizeScanHistoryWithKeyboard(event) {
@@ -3665,20 +3925,64 @@
         btn.setAttribute('aria-pressed', fullscreen ? 'true' : 'false');
     }
 
-    function setScanHistoryFullscreen(fullscreen) {
+    function setScanHistoryFullscreen(fullscreen, animate) {
         var root = document.documentElement;
         var box = getCachedElement('aft-scan-history-box');
         var body = getCachedElement('aft-scan-history-body');
         var fullscreenBtn = getCachedElement('aft-scan-history-fullscreen');
+        var list = getCachedElement('aft-scan-history-list');
+        var beforeRect;
+        var changed = scanHistoryFullscreen !== !!fullscreen;
+        var elements;
+        var overflowElements;
+        var saved;
+        var i;
         if (!root || !box || !body) {
             return;
         }
+        if (!changed) {
+            return;
+        }
+        clearScanHistoryCollapseVisual(list);
+        if (animate !== false) {
+            beforeRect = box.getBoundingClientRect();
+        }
         scanHistoryFullscreen = !!fullscreen;
-        root.classList.toggle('aft-scan-history-fullscreen', scanHistoryFullscreen);
-        box.classList.toggle('aft-scan-history-fullscreen', scanHistoryFullscreen);
+        elements = [box, body, list, box.querySelector('.aft-scan-history-header'),
+            getCachedElement('aft-scan-history-resize-handle')];
+        for (i = 0; i < elements.length; i++) {
+            if (elements[i]) {
+                elements[i].classList.toggle('aft-scan-history-fullscreen', scanHistoryFullscreen);
+            }
+        }
+        if (scanHistoryFullscreen) {
+            overflowElements = [root, document.body, getCachedElement('aft-scan-buttons-panel')];
+            box.__aftFullscreenOverflow = [];
+            for (i = 0; i < overflowElements.length; i++) {
+                if (overflowElements[i]) {
+                    box.__aftFullscreenOverflow.push({ element: overflowElements[i],
+                        value: overflowElements[i].style.getPropertyValue('overflow'),
+                        priority: overflowElements[i].style.getPropertyPriority('overflow') });
+                    overflowElements[i].style.setProperty('overflow', i === 2 ? 'visible' : 'hidden', 'important');
+                }
+            }
+        } else {
+            saved = box.__aftFullscreenOverflow || [];
+            for (i = 0; i < saved.length; i++) {
+                if (saved[i].value) {
+                    saved[i].element.style.setProperty('overflow', saved[i].value, saved[i].priority);
+                } else {
+                    saved[i].element.style.removeProperty('overflow');
+                }
+            }
+            box.__aftFullscreenOverflow = null;
+        }
         setScanHistoryFullscreenIcon(fullscreenBtn, scanHistoryFullscreen);
         if (!scanHistoryFullscreen) {
             applyScanHistoryHeight(getStoredScanHistoryHeight(), false);
+        }
+        if (beforeRect) {
+            animateScanHistoryVisual(list, { box: box, fromRect: beforeRect, reveal: true });
         }
         queueLayoutUpdate();
     }
@@ -3716,7 +4020,7 @@
         currentHeight = Math.round(list.getBoundingClientRect().height);
         if (currentHeight > 0) {
             storageSet(STORAGE_KEY_SCAN_HISTORY_EXPANDED_HEIGHT, String(currentHeight));
-            setScanHistoryFullscreen(false);
+            setScanHistoryFullscreen(false, false);
             targetHeight = 0;
         } else {
             expandedHeight = storageGet(STORAGE_KEY_SCAN_HISTORY_EXPANDED_HEIGHT, SCAN_HISTORY_DEFAULT_HEIGHT);
@@ -3726,15 +4030,17 @@
             window.clearTimeout(list.__aftHeightAnimationTimer);
         }
         list.style.transition = 'none';
-        applyScanHistoryHeight(currentHeight, false);
-        list.offsetHeight;
-        list.style.transition = 'height ' + UI_ANIMATION_MS + 'ms ' + UI_ANIMATION_EASING;
+        clearScanHistoryCollapseVisual(list);
+        if (targetHeight <= 0) {
+            animateScanHistoryCollapse(list);
+        }
         applyScanHistoryHeight(targetHeight, true);
-        list.__aftHeightAnimationTimer = window.setTimeout(function () {
-            list.style.transition = '';
-            list.__aftHeightAnimationTimer = null;
-            queueLayoutUpdate();
-        }, UI_ANIMATION_MS + 50);
+        if (targetHeight > 0) {
+            animateScanHistoryVisual(list, { reveal: true });
+        }
+        list.style.transition = '';
+        list.__aftHeightAnimationTimer = null;
+        queueLayoutUpdate();
     }
 
     function updateScanHistoryFilterButton() {
@@ -5309,11 +5615,6 @@ html.aft-resizing-scan-history .aft-scan-history-resize-handle::after {
   width: 82px;
   background: #E07B5B;
 }
-html.aft-resizing-scan-history,
-html.aft-resizing-scan-history * {
-  cursor: ns-resize !important;
-  user-select: none !important;
-}
 .aft-scan-history-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -5470,17 +5771,15 @@ html.aft-resizing-scan-history * {
   overflow: auto;
   scrollbar-width: thin;
 }
-.aft-scan-history-box.aft-scan-history-collapse-preview .aft-scan-history-list {
-  opacity: 0;
-  transform: translateY(16px) scaleY(0.96);
+.aft-scan-history-collapse-visual {
+  position: fixed;
+  z-index: 2147483647;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  contain: strict;
+  will-change: transform, opacity;
   transform-origin: bottom center;
-}
-html.aft-scan-history-fullscreen,
-html.aft-scan-history-fullscreen body {
-  overflow: hidden !important;
-}
-html.aft-scan-history-fullscreen #aft-scan-buttons-panel {
-  overflow: visible !important;
 }
 #aft-scan-history-box.aft-scan-history-fullscreen {
   position: fixed !important;
@@ -5496,14 +5795,14 @@ html.aft-scan-history-fullscreen #aft-scan-buttons-panel {
   border-radius: 12px !important;
   box-shadow: 0 20px 60px rgba(0,0,0,0.44) !important;
 }
-#aft-scan-history-box.aft-scan-history-fullscreen .aft-scan-history-resize-handle {
+.aft-scan-history-resize-handle.aft-scan-history-fullscreen {
   display: block !important;
   z-index: 12;
 }
-#aft-scan-history-box.aft-scan-history-fullscreen .aft-scan-history-header {
+.aft-scan-history-header.aft-scan-history-fullscreen {
   flex: 0 0 auto;
 }
-#aft-scan-history-box.aft-scan-history-fullscreen .aft-scan-history-body {
+#aft-scan-history-body.aft-scan-history-fullscreen {
   flex: 1 1 auto;
   min-height: 0;
   max-height: none !important;
@@ -5511,7 +5810,7 @@ html.aft-scan-history-fullscreen #aft-scan-buttons-panel {
   overflow: hidden !important;
   pointer-events: auto !important;
 }
-#aft-scan-history-box.aft-scan-history-fullscreen .aft-scan-history-list {
+#aft-scan-history-list.aft-scan-history-fullscreen {
   flex: 1 1 auto;
   height: 100% !important;
   min-height: 0 !important;
@@ -9643,6 +9942,19 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         } catch (ex) {}
     }
 
+    function handleDragCancel(event) {
+        if (event.type === 'contextmenu' && now() < dragCancelContextMenuUntil) {
+            stopEvent(event);
+            return;
+        }
+        if ((event.type !== 'contextmenu' && event.button !== 2) || !cancelActivePointerDrag) {
+            return;
+        }
+        dragCancelContextMenuUntil = now() + 600;
+        cancelActivePointerDrag();
+        stopEvent(event);
+    }
+
     function enableDropZonePointerDrag(scanBtn, row, groupId, buttonId) {
         var startX = 0;
         var startY = 0;
@@ -9669,6 +9981,9 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             removeTrackingListeners();
             tracking = false;
             dragging = false;
+            if (cancelActivePointerDrag === cancelPointerDrag) {
+                cancelActivePointerDrag = null;
+            }
             row.style.opacity = '1';
             if (document.documentElement && document.documentElement.classList) {
                 document.documentElement.classList.remove('aft-scan-drag-active');
@@ -9683,11 +9998,32 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             var targetGroupWrap;
             var targetGroupBody;
             var quickBox;
+            var quickRect;
 
             try {
                 target = document.elementFromPoint(e.clientX, e.clientY) || e.target;
             } catch (ex) {
                 target = e.target;
+            }
+
+            if (!buttonId) {
+                targetGroupWrap = getClosestWithClass(target, 'aft-scan-group-wrap');
+                if (targetGroupWrap) {
+                    showGroupDropMarker(e, targetGroupWrap, targetGroupWrap.getAttribute('data-group-id') || '');
+                    return true;
+                }
+                quickBox = getCachedElement('aft-scan-quick-buttons');
+                quickRect = quickBox ? quickBox.getBoundingClientRect() : null;
+                if (quickRect && e.clientX >= quickRect.left && e.clientX <= quickRect.right &&
+                        e.clientY >= quickRect.top && e.clientY <= quickRect.bottom &&
+                        showGroupDropMarker(e, null, '') === false) {
+                    return true;
+                }
+                if (showForgivingEdgeDropMarker(e) === false) {
+                    return true;
+                }
+                clearDropMarker();
+                return false;
             }
 
             targetRow = getClosestWithClass(target, 'aft-scan-button-row');
@@ -9743,8 +10079,12 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
                 if (document.documentElement && document.documentElement.classList) {
                     document.documentElement.classList.add('aft-scan-drag-active');
                 }
-                onDragStart(e, groupId, buttonId);
-                row.style.opacity = '0.45';
+                if (buttonId) {
+                    onDragStart(e, groupId, buttonId);
+                } else {
+                    onGroupDragStart(e, groupId);
+                }
+                row.style.opacity = buttonId ? '0.45' : '0.55';
             }
             updatePointerDropTarget(e);
         }
@@ -9752,6 +10092,11 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         function handleMouseUp(e) {
             var shouldDrop;
             if (!tracking) {
+                return;
+            }
+            if (e.button !== 0) {
+                cancelPointerDrag();
+                stopEvent(e);
                 return;
             }
 
@@ -9786,13 +10131,19 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         }
 
         row.addEventListener('mousedown', function (e) {
-            if (!e || e.button !== 0 || getClosestWithClass(e.target, 'aft-scan-dropzone-actions')) {
+            if (!e || e.button !== 0 || getClosestWithClass(e.target, 'aft-scan-dropzone-actions') ||
+                    (!buttonId && e.target !== scanBtn && !scanBtn.contains(e.target)) ||
+                    (!buttonId && e.target.closest && e.target.closest('button,input,select,a'))) {
                 return;
+            }
+            if (cancelActivePointerDrag) {
+                cancelActivePointerDrag();
             }
             startX = e.clientX;
             startY = e.clientY;
             tracking = true;
             dragging = false;
+            cancelActivePointerDrag = cancelPointerDrag;
             removeTrackingListeners();
             document.addEventListener('mousemove', handleMouseMove, true);
             document.addEventListener('mouseup', handleMouseUp, true);
@@ -10645,8 +10996,10 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             groupWrap = anchor.element;
             targetGroupId = anchor.groupId;
             after = anchor.after;
-        } else {
+        } else if (groupWrap) {
             after = shouldInsertAfterGroup(e, groupWrap);
+        } else {
+            return true;
         }
         nextTarget = {
             type: 'group',
@@ -11443,29 +11796,11 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
                 });
 
                 var header = document.createElement('div');
-                var headerDragStarted = false;
                 styleGroupHeader(header);
                 header.title = 'Kliknij, aby zwin\u0105\u0107 lub rozwin\u0105\u0107. Przeci\u0105gnij, aby zmieni\u0107 kolejno\u015b\u0107 grup.';
-                header.draggable = true;
                 header.style.cursor = 'pointer';
-                header.addEventListener('dragstart', function (e) {
-                    headerDragStarted = true;
-                    onGroupDragStart(e, group.id);
-                    groupWrap.style.opacity = '0.55';
-                });
-                header.addEventListener('dragend', function () {
-                    groupWrap.style.opacity = '1';
-                    groupDragData = null;
-                    clearDropMarker();
-                    window.setTimeout(function () {
-                        headerDragStarted = false;
-                    }, 160);
-                });
+                enableDropZonePointerDrag(header, groupWrap, group.id, null);
                 header.addEventListener('click', function (e) {
-                    if (headerDragStarted) {
-                        stopEvent(e);
-                        return false;
-                    }
                     stopEvent(e);
                     toggleGroupCollapsed(group.id);
                     return false;
@@ -11473,18 +11808,9 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
 
                 var groupDragHandle = document.createElement('div');
                 groupDragHandle.title = 'Przeci\u0105gnij, aby zmieni\u0107 kolejno\u015b\u0107 grup';
-                groupDragHandle.draggable = true;
                 styleDragHandle(groupDragHandle, true);
                 groupDragHandle.style.display = 'none';
-                groupDragHandle.addEventListener('dragstart', function (e) {
-                    onGroupDragStart(e, group.id);
-                    groupWrap.style.opacity = '0.55';
-                });
-                groupDragHandle.addEventListener('dragend', function () {
-                    groupWrap.style.opacity = '1';
-                    groupDragData = null;
-                    clearDropMarker();
-                });
+                enableDropZonePointerDrag(groupDragHandle, groupWrap, group.id, null);
 
                 var name = document.createElement('div');
                 name.className = 'aft-scan-group-name';
@@ -14230,6 +14556,9 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             document.addEventListener('visibilitychange', queueRuntimeUpdate, false);
             document.addEventListener('dragover', handleDocumentDragOver, true);
             document.addEventListener('drop', handleDocumentDrop, true);
+            document.addEventListener('pointerdown', handleDragCancel, true);
+            document.addEventListener('mousedown', handleDragCancel, true);
+            document.addEventListener('contextmenu', handleDragCancel, true);
             window.addEventListener('dragover', handleDocumentDragOver, true);
             window.addEventListener('drop', handleDocumentDrop, true);
         } catch (e) {}
