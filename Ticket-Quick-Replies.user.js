@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ticket Quick Replies
 // @namespace    ticket-quick-replies
-// @version      1.04
+// @version      1.06
 // @description  Quick replies and template groups for tickets.
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Ticket-Quick-Replies.png
 // @author       aolenche
@@ -164,7 +164,9 @@
         .fullscreen .groups, .fullscreen .replies { max-height: none; min-height: 0; }
         .fullscreen .form { flex: 1; min-height: 0; max-height: none; }
         .fullscreen .reply-preview { display: block; -webkit-line-clamp: unset; overflow: visible; }
-        .fullscreen .reply { align-content: start; }
+        .fullscreen .replies { grid-auto-rows: max-content; }
+        .fullscreen .reply-row { display: flex; }
+        .fullscreen .reply { height: auto; align-content: start; }
         .header-actions { display: flex; align-items: center; gap: 16px; }
         .fullscreen-switch {
             display: inline-flex;
@@ -296,6 +298,7 @@
             background: var(--tqr-surface, #161d26);
         }
         .reply-row:hover { border-color: var(--tqr-accent, #42b4ff); }
+        .reply:hover { background: var(--tqr-surface, #161d26); }
         .reply {
             display: block;
             width: 100%;
