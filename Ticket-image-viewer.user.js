@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ticket image viewer
 // @namespace    ticket-photo-viewer
-// @version      1.00
+// @version      1.01
 // @description  Browse ticket photo attachments in an interactive gallery with zoom and fullscreen viewing.
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Ticket image viewer.png
 // @author       aolenche
@@ -1204,6 +1204,7 @@ kbd {
     class PhotoStore {
         constructor() {
             this.assets = new Map();
+            this.rotations = new Map();
             this.jobs = new Map();
             this.queue = [];
             this.running = 0;
@@ -1610,6 +1611,7 @@ kbd {
                 asset.blob = null;
             }
             this.assets.clear();
+            this.rotations.clear();
             for (const url of this.downloadUrls) URL.revokeObjectURL(url);
             this.downloadUrls.clear();
         }
@@ -2075,8 +2077,8 @@ kbd {
             if (keepImage && !this.retainedRelease && this.displayedPhoto) this.retainedRelease = this.store.pin(this.displayedPhoto);
             this.store.setCurrent(this.photos, this.index);
             this.asset = null;
+            this.angle = this.store.rotations.get(this.photos[this.index].url) || 0;
             if (!keepImage) this.image.removeAttribute('src');
-            this.angle = 0;
             if (this.expanded() || !this.displayedPhoto) {
                 this.fitted = true;
                 this.scale = 1;
@@ -2120,7 +2122,7 @@ kbd {
                 }
                 const asset = await this.store.get(photo, 0);
                 if (this.dead || this.collapsed || token !== this.version || document.hidden) return;
-                const readyView = this.fitted && !asset.animated && this.store.view(photo, this.fitSpec(asset));
+                const readyView = this.fitted && this.angle === 0 && !asset.animated && this.store.view(photo, this.fitSpec(asset));
                 if (readyView) {
                     this.asset = asset;
                     this.displayedPhoto = photo.url;
@@ -2330,6 +2332,7 @@ kbd {
         rotate() {
             if (!this.asset) return;
             this.angle = (this.angle + 90) % 360;
+            this.store.rotations.set(this.photos[this.index].url, this.angle);
             this.fit();
         }
 
