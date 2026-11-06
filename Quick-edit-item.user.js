@@ -2,7 +2,7 @@
 // @name         Quick edit item
 // @namespace    quick-edit-item
 // @version      1.05
-// @description  Changes FCResearch inventory items to Sellable, Defective or Pending Research.
+// @description  Changes FCResearch inventory items to Sellable, Defective, Pending Research or Pending Repair.
 // @description:pl Zmienia pozycje Inwentarza FCResearch na Sellable, Defective lub Pending Research.
 // @author       aolenche
 // @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Quick edit item.user.js
