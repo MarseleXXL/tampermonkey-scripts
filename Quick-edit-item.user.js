@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Quick edit item
 // @namespace    quick-edit-item
-// @version      1.04
+// @version      1.05
 // @description  Changes FCResearch inventory items to Sellable, Defective or Pending Research.
 // @description:pl Zmienia pozycje Inwentarza FCResearch na Sellable, Defective lub Pending Research.
 // @author       aolenche
-// @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Quick-edit-item.user.js
-// @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Quick-edit-item.user.js
+// @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Quick edit item.user.js
+// @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Quick edit item.user.js
 // @include      *://qi-fcresearch-eu.corp.amazon.com/WRO1/results?s=*
 // @include      *://fcresearch-eu.aka.amazon.com/WRO1/results?s=*
 // @include      *://aft-qt-eu.aka.amazon.com/app/edititems*
@@ -51,6 +51,7 @@
         startButtonWrapper: 'qei-start-button-wrapper',
         actionCapsule: 'qei-action-capsule',
         actionPending: 'qei-action-pending',
+        actionRepair: 'qei-action-repair',
         actionDefective: 'qei-action-defective',
         actionSellable: 'qei-action-sellable',
         menuToggle: 'qei-menu-toggle',
@@ -92,6 +93,18 @@
                     value: 'PENDING_RESEARCH',
                     visibleLabel: 'Analiza w toku',
                     englishLabel: 'Pending Research',
+                },
+            ],
+        },
+        pendingRepair: {
+            workflowMode: 'Każdy',
+            targetField: 'consumer',
+            targetValue: 'PENDING_REPAIR',
+            options: [
+                {
+                    value: 'PENDING_REPAIR',
+                    visibleLabel: 'Oczekuje na naprawę',
+                    englishLabel: 'Pending Repair',
                 },
             ],
         },
@@ -658,7 +671,7 @@
     }
 
     function isSkuBlocked() {
-        return actionMode === 'pending' || actionMode === 'sellable' ||
+        return actionMode === 'pending' || actionMode === 'repair' || actionMode === 'sellable' ||
             skuAvailability !== 'available';
     }
 
@@ -670,7 +683,7 @@
         const blocked = isSkuBlocked();
         sku.classList.toggle('qei-disabled', blocked);
         sku.setAttribute('aria-disabled', String(blocked));
-        sku.title = actionMode === 'pending'
+        sku.title = actionMode === 'pending' || actionMode === 'repair'
             ? UI.skuPending
             : actionMode === 'sellable'
                 ? UI.skuSellable
@@ -723,7 +736,7 @@
             setSourceMode('all');
         }
         skuAvailability = available ? 'available' : 'unavailable';
-        if (!available || actionMode === 'pending' || actionMode === 'sellable') {
+        if (!available || actionMode === 'pending' || actionMode === 'repair' || actionMode === 'sellable') {
             applyWorkMode('kazdy');
         } else if (restoreSavedSku && !workMode) {
             applyWorkMode('sku');
@@ -732,7 +745,7 @@
         if (workMode !== previousWorkMode) {
             refreshInitialCounters();
         }
-        return available && actionMode !== 'pending' && actionMode !== 'sellable';
+        return available && actionMode !== 'pending' && actionMode !== 'repair' && actionMode !== 'sellable';
     }
 
     function setEditMenuExpanded(expanded) {
@@ -802,7 +815,7 @@
         const actPending = document.createElement('span');
         actPending.id = IDS.actionPending;
         actPending.className = 'qei-cap-btn';
-        actPending.textContent = 'Pending';
+        actPending.textContent = 'Pending Research';
         actPending.addEventListener('click', () => setActionMode('pending'));
         const actDefective = document.createElement('span');
         actDefective.id = IDS.actionDefective;
@@ -814,7 +827,12 @@
         actSellable.className = 'qei-cap-btn';
         actSellable.textContent = 'Sellable';
         actSellable.addEventListener('click', () => setActionMode('sellable'));
-        actionCapsule.append(actSellable, actDefective, actPending);
+        const actRepair = document.createElement('span');
+        actRepair.id = IDS.actionRepair;
+        actRepair.className = 'qei-cap-btn';
+        actRepair.textContent = 'Pending Repair';
+        actRepair.addEventListener('click', () => setActionMode('repair'));
+        actionCapsule.append(actSellable, actDefective, actPending, actRepair);
 
         const sourceCapsule = document.createElement('span');
         sourceCapsule.id = IDS.sourceCapsule;
@@ -898,7 +916,7 @@
         );
         const savedAction = readStoredMode(
             'qei_actionMode',
-            ['pending', 'defective', 'sellable']
+            ['pending', 'repair', 'defective', 'sellable']
         );
         const savedWork = readStoredMode(
             'qei_workMode',
@@ -949,7 +967,7 @@
         }
         if (mode === 'sku' && isSkuBlocked()) {
             setStatus(
-                actionMode === 'pending'
+                actionMode === 'pending' || actionMode === 'repair'
                     ? UI.skuPending
                     : actionMode === 'sellable'
                         ? UI.skuSellable
@@ -973,6 +991,10 @@
         setStatus('');
         actionMode = mode;
         const pending = document.getElementById(IDS.actionPending);
+        const repair = document.getElementById(IDS.actionRepair);
+        if (repair) {
+            repair.classList.toggle('qei-active', mode === 'repair');
+        }
         const defective = document.getElementById(IDS.actionDefective);
         const sellable = document.getElementById(IDS.actionSellable);
         if (sellable) {
@@ -983,7 +1005,7 @@
             defective.classList.toggle('qei-active', mode === 'defective');
         }
         GM_setValue('qei_actionMode', mode);
-        if (mode === 'pending' || mode === 'sellable') {
+        if (mode === 'pending' || mode === 'repair' || mode === 'sellable') {
             applyWorkMode('kazdy');
         }
         updateSkuControlState();
@@ -1004,6 +1026,8 @@
         let actionKey;
         if (actionMode === 'pending') {
             actionKey = 'pendingResearch';
+        } else if (actionMode === 'repair') {
+            actionKey = 'pendingRepair';
         } else if (actionMode === 'sellable') {
             actionKey = 'sellable';
         } else {
@@ -1207,6 +1231,8 @@
         try {
             const selectedActionKey = selectedActionMode === 'pending'
                 ? 'pendingResearch'
+                : selectedActionMode === 'repair'
+                    ? 'pendingRepair'
                 : selectedActionMode === 'sellable'
                     ? 'sellable'
                     : 'defective';
@@ -2910,14 +2936,14 @@
                 return;
             }
 
-            if (actionKey === 'pendingResearch') {
+            if (action.targetField === 'consumer') {
                 setPendingProgress(0, 0);
             }
             const items = await collectItemsToChange(
                 actionKey,
                 selectedSourceMode
             );
-            if (actionKey === 'pendingResearch') {
+            if (action.targetField === 'consumer') {
                 setPendingProgress(0, items.length);
             }
 
@@ -2968,7 +2994,7 @@
                         );
                         changed += 1;
                         markItemChanged(item, action);
-                        if (actionKey === 'pendingResearch') {
+                        if (action.targetField === 'consumer') {
                             setPendingProgress(changed, items.length);
                         }
                     } catch (error) {
@@ -3101,3 +3127,4 @@
     }
     ensureControls();
 })();
+
