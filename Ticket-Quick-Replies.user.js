@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ticket Quick Replies
 // @namespace    ticket-quick-replies
-// @version      1.06
+// @version      1.10
 // @description  Quick replies and template groups for tickets.
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Ticket-Quick-Replies.png
 // @author       aolenche
@@ -20,6 +20,7 @@
     const storageKey = 'ticket-quick-replies-v1';
     const lastGroupKey = 'ticket-quick-replies-last-group';
     const fullscreenKey = 'ticket-quick-replies-fullscreen';
+    const settingsKey = 'ticket-quick-replies-settings-v1';
     const defaultGroupId = 'default';
     const editorSelector = '#sim-communicationActions--createComment';
     const buttonId = 'ticket-quick-replies-button';
@@ -96,6 +97,26 @@
         }
     }
 
+    function readSettings() {
+        const saved = GM_getValue(settingsKey, {});
+        if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+            throw new Error('The saved settings format is invalid.');
+        }
+        return {
+            name: typeof saved.name === 'string' ? saved.name.trim().replace(/[\r\n]+/g, ' ') : '',
+            automatic: saved.automatic !== false
+        };
+    }
+
+    function composeReply(text) {
+        const settings = readSettings();
+        if (!settings.automatic || !settings.name) return text;
+        let body = text.replace(/^(?:[ \t]*\r?\n)*[ \t]*Hi,[ \t]*(?:\r?\n|$)/i, '');
+        body = body.replace(/(?:\r?\n|^)[ \t]*Regards,[ \t]*\r?\n[^\r\n]*(?:\r?\n[ \t]*)*$/i, '');
+        body = body.replace(/^(?:[ \t]*\r?\n)+/, '').replace(/(?:\r?\n[ \t]*)+$/, '');
+        return `Hi,\n\n${body ? `${body}\n\n` : ''}Regards,\n${settings.name}`;
+    }
+
     function commit(change) {
         try {
             const next = readData();
@@ -168,6 +189,10 @@
         .fullscreen .reply-row { display: flex; }
         .fullscreen .reply { height: auto; align-content: start; }
         .header-actions { display: flex; align-items: center; gap: 16px; }
+        .header-main { display: flex; align-items: center; flex-wrap: wrap; gap: 20px; min-width: 0; }
+        .identity { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; font-weight: normal; }
+        .identity span { color: var(--tqr-secondary, #c6c6cd); }
+        .identity input { width: 180px; min-width: 0; margin: 0; font-size: 14px; }
         .fullscreen-switch {
             display: inline-flex;
             align-items: center;
@@ -232,7 +257,7 @@
             align-items: center;
             gap: 8px;
         }
-        .header { justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--tqr-divider, #424650); }
+        .header { justify-content: space-between; flex-wrap: wrap; padding: 16px 20px; border-bottom: 1px solid var(--tqr-divider, #424650); }
         h2 { font-size: 20px; line-height: 24px; margin: 0; color: var(--tqr-heading, #ebebf0); }
         .tools { padding: 12px 20px; flex-wrap: wrap; }
         .search { flex: 1; min-width: 180px; }
@@ -389,6 +414,30 @@
         .form[hidden], .layout[hidden], .tools[hidden] { display: none; }
         label { display: block; margin-bottom: 12px; font-weight: bold; }
         label input, label textarea, label select { display: block; margin-top: 4px; font-weight: normal; }
+        .settings-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; gap: 16px; }
+        .settings-form > h2, .settings-form > .actions { grid-column: 1 / -1; }
+        .settings-section {
+            min-width: 0;
+            padding: 16px;
+            border: 1px solid var(--tqr-divider, #424650);
+            border-radius: 12px;
+            background: var(--tqr-surface, #161d26);
+        }
+        .settings-section h3 { margin: 0 0 12px; font-size: 16px; color: var(--tqr-heading, #ebebf0); }
+        .settings-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0; font-weight: normal; }
+        .settings-copy { flex: 1; min-width: 0; }
+        .settings-copy strong { display: block; font-size: 14px; }
+        .settings-toggle input {
+            flex: 0 0 auto;
+            width: 16px;
+            height: 16px;
+            margin: 0;
+            padding: 0;
+            accent-color: var(--tqr-accent, #42b4ff);
+        }
+        .settings-hint { display: block; margin: 4px 0 0; font-size: 12px; line-height: 18px; color: var(--tqr-secondary, #c6c6cd); }
+        .settings-section .transfer-actions { margin-top: 16px; }
+        .settings-section .transfer-actions > button { flex: 1; max-width: 180px; }
         .new-group-field[hidden] { display: none; }
         .form textarea { min-height: 150px; max-height: 30vh; resize: vertical; }
         .actions { justify-content: flex-end; }
@@ -404,6 +453,8 @@
         .transfer-status { padding: 0 20px 8px; color: var(--tqr-secondary, #c6c6cd); font-size: 12px; }
         .transfer-status:empty { display: none; }
         @media (max-width: 640px) {
+            .settings-form { grid-template-columns: 1fr; }
+            .header-main { gap: 12px; }
             .layout { grid-template-columns: 1fr; }
             .groups { max-height: 160px; border-right: 0; border-bottom: 1px solid var(--tqr-divider, #424650); }
             .replies { grid-template-columns: 1fr; max-height: 35vh; }
@@ -421,6 +472,24 @@
     const header = element('div', 'header');
     const heading = element('h2', '', 'Replies');
     heading.id = 'tqr-title';
+    const headerMain = element('div', 'header-main');
+    const identity = element('label', 'identity');
+    const nameInput = element('input');
+    nameInput.name = 'signatureName';
+    nameInput.maxLength = 100;
+    nameInput.autocomplete = 'given-name';
+    nameInput.placeholder = 'Enter your name';
+    nameInput.title = 'Saved automatically';
+    nameInput.addEventListener('input', () => {
+        try {
+            GM_setValue(settingsKey, { ...readSettings(), name: nameInput.value.trim() });
+            if (message.textContent.startsWith('Could not save your name:')) message.textContent = '';
+        } catch (error) {
+            message.textContent = `Could not save your name: ${error.message}`;
+        }
+    });
+    identity.append(element('span', '', 'Your name'), nameInput);
+    headerMain.append(heading, identity);
     const headerActions = element('div', 'header-actions');
     const fullscreenLabel = element('label', 'fullscreen-switch');
     const fullscreenToggle = element('input');
@@ -437,8 +506,9 @@
         }
     });
     fullscreenLabel.append(fullscreenToggle, element('span', '', 'Full screen'));
-    headerActions.append(fullscreenLabel, button('✕', () => dialog.close(), '', 'Close'));
-    header.append(heading, headerActions);
+    const settingsButton = button('Settings', editSettings);
+    headerActions.append(fullscreenLabel, settingsButton, button('✕', () => dialog.close(), '', 'Close'));
+    header.append(headerMain, headerActions);
     const tools = element('div', 'tools');
     const search = element('input', 'search');
     search.type = 'search';
@@ -461,6 +531,7 @@
     const message = element('p', 'message');
     message.setAttribute('role', 'alert');
     const transfer = element('div', 'transfer-actions');
+    transfer.hidden = true;
     const transferStatus = element('span', 'transfer-status');
     transferStatus.setAttribute('aria-live', 'polite');
     const fileInput = element('input');
@@ -471,7 +542,6 @@
     const importButton = button('Import', () => fileInput.click(), '', 'Import groups and replies from a file');
     fileInput.addEventListener('change', importReplies);
     transfer.append(exportButton, importButton, fileInput);
-    tools.append(transfer);
     dialog.append(header, tools, transferStatus, message, layout, form);
     const confirmation = element('dialog', 'confirmation');
     confirmation.setAttribute('aria-labelledby', 'tqr-confirm-title');
@@ -975,7 +1045,10 @@
 
     function beginForm(title) {
         editing = true;
+        settingsButton.disabled = true;
         form.replaceChildren(element('h2', '', title));
+        form.classList.remove('settings-form');
+        form.noValidate = false;
         form.hidden = false;
         layout.hidden = true;
         tools.hidden = true;
@@ -985,10 +1058,11 @@
 
     function endForm() {
         editing = false;
+        settingsButton.disabled = false;
         form.hidden = true;
         layout.hidden = false;
         tools.hidden = false;
-        transfer.hidden = false;
+        transfer.hidden = true;
         form.onsubmit = null;
         refreshData();
         render();
@@ -1005,6 +1079,47 @@
             event.preventDefault();
             save();
         };
+    }
+
+    function editSettings() {
+        let saved;
+        try {
+            saved = readSettings();
+        } catch (error) {
+            message.textContent = `Could not load settings: ${error.message}`;
+            return;
+        }
+        beginForm('Settings');
+        form.noValidate = true;
+        form.classList.add('settings-form');
+        const formatting = element('section', 'settings-section');
+        formatting.append(element('h3', '', 'Message formatting'));
+        const automatic = element('input');
+        automatic.type = 'checkbox';
+        automatic.name = 'automaticGreetingSignature';
+        automatic.checked = saved.automatic;
+        const toggle = element('label', 'settings-toggle');
+        const copy = element('span', 'settings-copy');
+        copy.append(element('strong', '', 'Automatic greeting and signature'),
+            element('span', 'settings-hint', 'Adds “Hi,” and “Regards,” using the name shown above.'));
+        toggle.append(copy, automatic);
+        formatting.append(toggle);
+        const backup = element('section', 'settings-section');
+        backup.append(element('h3', '', 'Backup & transfer'),
+            element('p', 'settings-hint', 'Export your reply groups or import them on another computer.'));
+        transfer.hidden = false;
+        backup.append(transfer);
+        form.append(formatting, backup);
+        formActions(() => {
+            try {
+                GM_setValue(settingsKey, { ...readSettings(), automatic: automatic.checked });
+                endForm();
+                transferStatus.textContent = 'Settings saved.';
+            } catch (error) {
+                message.textContent = `Could not save settings: ${error.message}`;
+            }
+        });
+        automatic.focus();
     }
 
     function editGroup(group = null) {
@@ -1134,7 +1249,14 @@
         const useSaved = savedSelection && savedSelection.editor === editor && savedSelection.value === previous;
         const start = useSaved ? savedSelection.start : editor.selectionStart;
         const end = useSaved ? savedSelection.end : editor.selectionEnd;
-        const next = previous.slice(0, start) + reply.text + previous.slice(end);
+        let replyText;
+        try {
+            replyText = composeReply(reply.text);
+        } catch (error) {
+            message.textContent = `Could not load settings: ${error.message}`;
+            return;
+        }
+        const next = previous.slice(0, start) + replyText + previous.slice(end);
         if (editor.maxLength >= 0 && next.length > editor.maxLength) {
             message.textContent = 'The text exceeds the ticket editor’s maximum length.';
             return;
@@ -1143,9 +1265,10 @@
         setter.call(editor, next);
         editor.dispatchEvent(new Event('input', { bubbles: true }));
         rememberGroup(reply.groupId);
+        returnFocus = editor;
         dialog.close();
         editor.focus();
-        const caret = start + reply.text.length;
+        const caret = start + replyText.length;
         editor.setSelectionRange(caret, caret);
     }
 
@@ -1166,6 +1289,11 @@
         dialog.classList.toggle('fullscreen', fullscreenToggle.checked);
         refreshData(true);
         render();
+        try {
+            nameInput.value = readSettings().name;
+        } catch (error) {
+            message.textContent = `Could not load settings: ${error.message}`;
+        }
         dialog.showModal();
         search.focus();
     }
@@ -1221,7 +1349,8 @@
         }
         const actionSlot = post.parentElement;
         if (current && current.parentElement === actionSlot) {
-            current.disabled = editor.disabled || editor.readOnly;
+            const disabled = editor.disabled || editor.readOnly;
+            if (current.disabled !== disabled) current.disabled = disabled;
             return;
         }
         if (current) current.remove();
