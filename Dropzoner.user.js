@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Dropzoner
 // @namespace    aft-move-container-auto-tools-age
-// @version      1.04
+// @version      1.05
 // @author       aolenche
 // @description  Twórz własną listę Drop-Zon i porządkuj je według grup. Sprawdzaj wiek oraz ilość towaru w kontenerach. Przeglądaj historię skanowań.
 // @icon         https://drive-render.corp.amazon.com/view/aolenche@/Icons/Dropzoner.png
 // @match        *://aft-moveapp-dub-dub.dub.proxy.amazon.com/move-container*
+// @match        https://aft-moveapp.eu.aftx.amazonoperations.app/move-container*
 // @match        *://peculiar-inventory-eu.aka.corp.amazon.com/*
 // @updateURL    https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Dropzoner.user.js
 // @downloadURL  https://raw.githubusercontent.com/MarseleXXL/tampermonkey-scripts/main/Dropzoner.user.js
@@ -931,8 +932,42 @@
         return submitDropZoneWithReset(text);
     }
     var USER_PROFILE_SYNC_DEBOUNCE_MS = 1200;
+    var initialProfileOverlay = null;
+    var initialProfileOverlayStarted = false;
+    var initialProfileHadLocalGroups = Boolean(storageGet(STORAGE_KEY_GROUPS, ''));
+
+    function showInitialProfileLoading() {
+        if (initialProfileOverlayStarted) return;
+        initialProfileOverlayStarted = true;
+        if (initialProfileHadLocalGroups) return;
+        if (storageGet('aft_profile_first_load_complete', '') === '1') return;
+        var template = getCachedElement('aft-window-focus-overlay');
+        if (!template || !template.parentNode) return;
+        initialProfileOverlay = template.cloneNode(true);
+        initialProfileOverlay.id = 'aft-profile-loading-overlay';
+        initialProfileOverlay.setAttribute('aria-hidden', 'false');
+        initialProfileOverlay.querySelector('strong').textContent = 'WCZYTYWANIE PROFILU';
+        initialProfileOverlay.querySelector('span').textContent = 'Pobieranie Drop-Zon i ustawie\u0144\u2026';
+        template.parentNode.appendChild(initialProfileOverlay);
+    }
+
+    function finishInitialProfileLoading(success) {
+        if (!initialProfileOverlay) return;
+        initialProfileOverlay.remove();
+        initialProfileOverlay = null;
+        if (success) {
+            storageSet('aft_profile_first_load_complete', '1');
+        } else {
+            showAftNoticeDialog('Profil niedost\u0119pny',
+                'Nie uda\u0142o si\u0119 wczyta\u0107 profilu. Sprawd\u017a po\u0142\u0105czenie. Pobieranie zostanie ponowione automatycznie.');
+        }
+    }
+
     var USER_PROFILE_SYNC_RETRY_MS = 30000;
     var USER_PROFILE_SYNC_REQUEST_TIMEOUT_MS = 12000;
+    var invitationGroupPattern = /^share-[a-f0-9-]{36}-[0-9]+$/;
+    var seenInvitationGroups = new Set();
+    var seenSharedHistoryRevision = 0;
 
     function isUserProfileSyncStorageKey(key) {
         return key === STORAGE_KEY_GROUPS ||
@@ -1012,22 +1047,27 @@
     }
 
     function requestUserProfileSync(method, profile, callback) {
-        var url;
-        if (typeof GM_xmlhttpRequest !== 'function' || !userProfileSyncLogin ||
-                trimText(USER_PROFILE_SYNC_API_KEY).length < 20) {
+        if (!userProfileSyncLogin) {
             callback(0, null);
             return;
         }
-        url = USER_PROFILE_SYNC_API_ORIGIN + '/v1/profiles/' + encodeURIComponent(userProfileSyncLogin);
+        requestDropzonerSync(method, '/v1/profiles/' + encodeURIComponent(userProfileSyncLogin), profile, callback);
+    }
+
+    function requestDropzonerSync(method, path, body, callback) {
+        if (typeof GM_xmlhttpRequest !== 'function' || trimText(USER_PROFILE_SYNC_API_KEY).length < 20) {
+            callback(0, null);
+            return;
+        }
         GM_xmlhttpRequest({
             method: method,
-            url: url,
+            url: USER_PROFILE_SYNC_API_ORIGIN + path,
             headers: {
                 'Accept': 'application/json',
                 'X-Sync-Key': USER_PROFILE_SYNC_API_KEY,
                 'Content-Type': 'application/json'
             },
-            data: profile ? JSON.stringify(profile) : undefined,
+            data: body ? JSON.stringify(body) : undefined,
             responseType: 'json',
             timeout: USER_PROFILE_SYNC_REQUEST_TIMEOUT_MS,
             anonymous: true,
@@ -1041,6 +1081,101 @@
                 callback(0, null);
             }
         });
+    }
+
+    function rememberSharedHistory(profile) {
+        var items = Array.isArray(profile.sharedHistory) ? profile.sharedHistory : [];
+        var seen = items.reduce(function (value, item) {
+            return Number.isSafeInteger(item.revision) ? Math.max(value, item.revision) : value;
+        }, seenSharedHistoryRevision);
+        if (seen > seenSharedHistoryRevision) {
+            seenSharedHistoryRevision = seen;
+            storageSet('aft_dropzoner_seen_shared_history:' + userProfileSyncLogin, String(seen));
+        }
+    }
+
+    function mergeReceivedInvitationHistory(profile, history) {
+        if (!profile || !Array.isArray(profile.sharedHistory) || !Array.isArray(history)) {
+            return;
+        }
+        var protectedIds = new Set(profile.sharedHistory.filter(function (item) {
+            return item.revision > seenSharedHistoryRevision;
+        }).map(function (item) { return item.id; }));
+        if (!protectedIds.size) {
+            return;
+        }
+        var latest = new Map(scanHistoryEntries.map(function (entry) { return [entry.containerId, entry]; }));
+        var changed = false;
+        history.forEach(function (entry) {
+            if (!protectedIds.has(entry.id)) {
+                return;
+            }
+            var normalized = normalizeScanHistoryEntry(entry);
+            var prior = normalized && latest.get(normalized.containerId);
+            if (normalized && (!prior || normalized.scannedAt > prior.scannedAt)) {
+                latest.set(normalized.containerId, normalized);
+                changed = true;
+            }
+        });
+        if (changed) {
+            var merged = Array.from(latest.values()).sort(function (a, b) { return b.scannedAt - a.scannedAt; });
+            var wasApplying = userProfileSyncApplyingRemote;
+            userProfileSyncApplyingRemote = true;
+            try {
+                if (!storageSet(STORAGE_KEY_SCAN_HISTORY, JSON.stringify(merged))) {
+                    return;
+                }
+                scanHistoryEntries = merged;
+                renderScanHistory();
+            } finally {
+                userProfileSyncApplyingRemote = wasApplying;
+            }
+        }
+        rememberSharedHistory(profile);
+    }
+
+    function rememberInvitationGroups(groups) {
+        var added = false;
+        groups.forEach(function (group) {
+            if (invitationGroupPattern.test(group.id) && !seenInvitationGroups.has(group.id)) {
+                seenInvitationGroups.add(group.id);
+                added = true;
+            }
+        });
+        if (added && userProfileSyncLogin) {
+            var ids = Array.from(seenInvitationGroups).slice(-500);
+            seenInvitationGroups = new Set(ids);
+            storageSet('aft_dropzoner_seen_invitations:' + userProfileSyncLogin, JSON.stringify(ids));
+        }
+    }
+
+    function mergeReceivedInvitationGroups(groups) {
+        if (!Array.isArray(groups) || !groups.length) {
+            return;
+        }
+        var existing = new Set(scanGroups.map(function (group) { return group.id; }));
+        var added = normalizeUserProfileSyncGroups(groups).filter(function (group) {
+            return invitationGroupPattern.test(group.id) && !existing.has(group.id) && !seenInvitationGroups.has(group.id);
+        });
+        if (!added.length) {
+            return;
+        }
+        var nextGroups = scanGroups.concat(added);
+        var wasApplyingRemote = userProfileSyncApplyingRemote;
+        userProfileSyncApplyingRemote = true;
+        try {
+            if (!storageSet(STORAGE_KEY_GROUPS, JSON.stringify(nextGroups))) {
+                return;
+            }
+            scanGroups = nextGroups;
+            rememberInvitationGroups(added);
+            initializeGroupUndoHistory();
+            updateGroupSelect();
+            renderGroups();
+            queueLayoutUpdate();
+        } finally {
+            userProfileSyncApplyingRemote = wasApplyingRemote;
+        }
     }
 
     function normalizeUserProfileSyncGroups(sourceGroups) {
@@ -1073,7 +1208,7 @@
         }
     }
 
-    function applyUserProfileSyncData(data) {
+    function applyUserProfileSyncData(data, profile) {
         var groups;
         var sounds;
         var volume;
@@ -1097,6 +1232,7 @@
         try {
             scanGroups = groups;
             ensureAtLeastOneGroup();
+            rememberInvitationGroups(scanGroups);
             if (activeGroupId !== UNGROUPED_GROUP_ID && findGroupIndex(activeGroupId) < 0) {
                 activeGroupId = scanGroups[0].id;
             }
@@ -1108,9 +1244,11 @@
             storageSet(STORAGE_KEY_SCAN_SOUND_SAFE, sounds.safe === false ? '0' : '1');
             storageSet(STORAGE_KEY_SCAN_SOUND_MISSING, sounds.missing === false ? '0' : '1');
             applyWindowFocusIndicatorFromUserProfile(data);
-            if (isArray(data.history)) {
-                storageSet(STORAGE_KEY_SCAN_HISTORY, JSON.stringify(data.history));
+            if (isArray(data.history) && storageSet(STORAGE_KEY_SCAN_HISTORY, JSON.stringify(data.history))) {
                 loadScanHistory();
+                if (profile) {
+                    rememberSharedHistory(profile);
+                }
             }
             initializeGroupUndoHistory();
             applyDarkMode(data.darkMode === true);
@@ -1133,6 +1271,8 @@
             schemaVersion: 2,
             login: userProfileSyncLogin,
             revision: userProfileSyncRemoteRevision + 1,
+            seenInvitationGroups: Array.from(seenInvitationGroups),
+            seenSharedHistoryRevision: seenSharedHistoryRevision,
             updatedAt: new Date().toISOString(),
             data: {
                 groups: JSON.parse(JSON.stringify(scanGroups)),
@@ -1187,7 +1327,12 @@
         requestUserProfileSync('PUT', profile, function (status, response) {
             userProfileSyncRequestActive = false;
             if (status === 200 || status === 201) {
-                userProfileSyncRemoteRevision = Math.max(0, Number(response && response.profile && response.profile.revision) || profile.revision);
+                mergeReceivedInvitationGroups(response && response.profile && response.profile.data && response.profile.data.groups);
+                if (response && response.profile && response.profile.data) {
+                    mergeReceivedInvitationHistory(response.profile, response.profile.data.history);
+                }
+                userProfileSyncRemoteRevision = Math.max(userProfileSyncRemoteRevision,
+                    Number(response && response.profile && response.profile.revision) || profile.revision);
                 if (localVersion === userProfileSyncLocalVersion && dirtyToken === getUserProfileSyncDirtyToken()) {
                     storageSet(getUserProfileSyncDirtyStorageKey(), '');
                     clearWindowFocusIndicatorSyncDirty();
@@ -1219,28 +1364,45 @@
             var profile;
             userProfileSyncRequestActive = false;
             if (status === 404) {
+                finishInitialProfileLoading(true);
                 userProfileSyncRemoteRevision = 0;
                 scheduleUserProfileSyncPush(0);
                 return;
             }
             if (status < 200 || status >= 300 || !response || !response.profile) {
+                finishInitialProfileLoading(false);
                 scheduleUserProfileSyncRetry(function () {
                     pullUserProfileSync(preserveLocal);
                 });
                 return;
             }
             profile = response.profile;
-            userProfileSyncRemoteRevision = Math.max(0, Number(profile && profile.revision) || 0);
+            var remoteRevision = Math.max(0, Number(profile && profile.revision) || 0);
+            if (remoteRevision < userProfileSyncRemoteRevision) {
+                finishInitialProfileLoading(true);
+                if (getUserProfileSyncDirtyToken()) {
+                    scheduleUserProfileSyncPush(USER_PROFILE_SYNC_DEBOUNCE_MS);
+                }
+                return;
+            }
+            userProfileSyncRemoteRevision = remoteRevision;
             if (preserveLocal || getUserProfileSyncDirtyToken() ||
                     userProfileSyncLocalVersion !== localVersionAtStart) {
+                if (profile.login === userProfileSyncLogin && profile.data) {
+                    mergeReceivedInvitationGroups(profile.data.groups);
+                    mergeReceivedInvitationHistory(profile, profile.data.history);
+                }
+                finishInitialProfileLoading(true);
                 scheduleUserProfileSyncPush(0);
                 return;
             }
             if (!profile || (profile.schemaVersion !== 1 && profile.schemaVersion !== 2) ||
                     profile.login !== userProfileSyncLogin ||
-                    !applyUserProfileSyncData(profile.data)) {
+                    !applyUserProfileSyncData(profile.data, profile)) {
+                finishInitialProfileLoading(false);
                 return;
             }
+            finishInitialProfileLoading(true);
             if (isWindowFocusIndicatorSyncDirty()) {
                 scheduleUserProfileSyncPush(0);
                 return;
@@ -1260,17 +1422,455 @@
         if (userProfileSyncInitialized || trimText(USER_PROFILE_SYNC_API_KEY).length < 20) {
             return;
         }
+        if (attempt === 0) showInitialProfileLoading();
         userProfileSyncLogin = getEmployeeLoginForProfileSync();
         if (!userProfileSyncLogin) {
             if (attempt < 80) {
                 window.setTimeout(function () {
                     initializeUserProfileSync(attempt + 1);
                 }, 250);
+            } else {
+                finishInitialProfileLoading(false);
             }
             return;
         }
         userProfileSyncInitialized = true;
+        seenSharedHistoryRevision = Number(storageGet('aft_dropzoner_seen_shared_history:' + userProfileSyncLogin, '0')) || 0;
+        var remembered = storageGetJson('aft_dropzoner_seen_invitations:' + userProfileSyncLogin, []);
+        if (Array.isArray(remembered)) {
+            seenInvitationGroups = new Set(remembered.filter(function (id) { return invitationGroupPattern.test(id); }));
+        }
+        rememberInvitationGroups(scanGroups);
         pullUserProfileSync(false);
+        checkDropzonerInvitations();
+    }
+    var invitationInbox = [];
+    var invitationCheckActive = false;
+    var invitationCheckMessage = '';
+    var invitationProtocolReady = false;
+    var invitationDialog = null;
+
+    function requestDropzonerInvitation(action, payload, callback) {
+        if (!userProfileSyncLogin) {
+            callback(400, { error: 'login_unavailable' });
+            return;
+        }
+        requestDropzonerSync('POST', '/v1/invitations/' + encodeURIComponent(userProfileSyncLogin) + '/' + action + '?v=2', payload, callback);
+    }
+
+    function invitationError(status, response) {
+        var messages = {
+            login_unavailable: 'Nie odczytano loginu z AFT. Od\u015bwie\u017c stron\u0119 i spr\u00f3buj ponownie.',
+            invalid_recipient: 'Wpisz poprawny login innego u\u017cytkownika.',
+            recipient_unavailable: 'Ten u\u017cytkownik nie otworzy\u0142 jeszcze Dropzonera z obs\u0142ug\u0105 zaprosze\u0144.',
+            invitations_unavailable: 'Us\u0142uga zaprosze\u0144 jest niedost\u0119pna.',
+            not_found: 'Us\u0142uga zaprosze\u0144 jest niedost\u0119pna.',
+            invitation_unavailable: 'Zaproszenie wygas\u0142o lub jest niedost\u0119pne. Sprawd\u017a zaproszenia.',
+            invitation_conflict: 'Stan zaproszenia si\u0119 zmieni\u0142. Sprawd\u017a zaproszenia i spr\u00f3buj ponownie.',
+            profile_conflict: 'Profil zmieni\u0142 si\u0119 w trakcie zapisu. Spr\u00f3buj ponownie.',
+            profile_not_ready: 'Tw\u00f3j profil nie jest jeszcze zsynchronizowany. Spr\u00f3buj ponownie p\u00f3\u017aniej.',
+            profile_group_limit: 'Brak miejsca na kolejne grupy lub Drop-Zony w profilu.',
+            invalid_invitation_groups: 'Wybierz maksymalnie 40 grup.',
+            invalid_invitation_buttons: 'Wybierz maksymalnie 200 Drop-Zon.',
+            invitation_limit: 'Osi\u0105gni\u0119to limit zaprosze\u0144. Spr\u00f3buj ponownie p\u00f3\u017aniej.'
+        };
+        if (status === 413) {
+            return 'Pakiet jest za du\u017cy. Wybierz mniej Drop-Zon lub kr\u00f3tszy zakres historii.';
+        }
+        if (response && response.error === 'recipient_history_unavailable') {
+            return 'Odbiorca musi otworzy\u0107 AFT z wersj\u0105 Dropzonera obs\u0142uguj\u0105c\u0105 histori\u0119.';
+        }
+        if (response && response.error === 'profile_history_limit') {
+            return 'Brak miejsca na ca\u0142\u0105 histori\u0119 w profilu. Niczego nie dodano.';
+        }
+        return (response && messages[response.error]) || 'Nie uda\u0142o si\u0119 po\u0142\u0105czy\u0107. Spr\u00f3buj ponownie.';
+    }
+
+    function invitationElement(parent, tag, className, text) {
+        var node = document.createElement(tag);
+        if (className) {
+            node.className = className;
+        }
+        if (text) {
+            node.textContent = text;
+        }
+        parent.appendChild(node);
+        return node;
+    }
+
+    function invitationBadge(parent, count) {
+        if (!parent) {
+            return;
+        }
+        var badge = parent.querySelector('.aft-invitation-badge');
+        if (!badge) {
+            badge = invitationElement(parent, 'span', 'aft-invitation-badge');
+        }
+        badge.textContent = count || '';
+        badge.hidden = !count;
+        badge.setAttribute('aria-label', 'Otrzymane: ' + count);
+    }
+
+    function updateInvitationBadges() {
+        invitationBadge(getCachedElement('aft-dropzoner-invitations'), invitationInbox.length);
+        invitationBadge(getCachedElement('aft-scan-menu-toggle'), invitationInbox.length);
+        if (invitationDialog && invitationDialog.overlay.isConnected) {
+            invitationBadge(invitationDialog.inboxTab, invitationInbox.length);
+        }
+    }
+
+    function checkDropzonerInvitations() {
+        if (invitationCheckActive) {
+            return;
+        }
+        invitationCheckActive = true;
+        invitationCheckMessage = 'Sprawdzanie zaprosze\u0144\u2026';
+        refreshDropzonerInvitationInbox();
+        requestDropzonerInvitation('inbox', null, function (status, response) {
+            invitationCheckActive = false;
+            if (status === 200 && response && response.protocol === 2 && Array.isArray(response.invitations)) {
+                invitationProtocolReady = true;
+                invitationInbox = response.invitations;
+                invitationCheckMessage = '';
+                updateInvitationBadges();
+            } else {
+                invitationCheckMessage = status === 200 ? 'Serwer wymaga aktualizacji udost\u0119pniania.' : invitationError(status, response);
+            }
+            refreshDropzonerInvitationInbox();
+        });
+    }
+
+    function invitationButton(parent, text, kind, handler) {
+        var button = invitationElement(parent, 'button', 'aft-script-dialog-button ' + kind, text);
+        button.type = 'button';
+        if (handler) {
+            button.addEventListener('click', handler);
+        }
+        return button;
+    }
+
+    function invitationDuplicateCodes(invite, saved) {
+        return invite.groups.flatMap(function (group) {
+            return group.buttons.map(function (button) { return button.text || button.label; });
+        }).filter(function (code) { return saved.has(code); });
+    }
+
+    function savedInvitationCodes() {
+        return new Set(scanGroups.flatMap(function (group) {
+            return group.buttons.map(function (button) { return button.text || button.label; });
+        }));
+    }
+
+    function formatInvitationDate(timestamp) {
+        return new Intl.DateTimeFormat('pl-PL', {
+            timeZone: 'Europe/Warsaw', year: 'numeric', month: '2-digit', day: '2-digit'
+        }).format(new Date(timestamp));
+    }
+
+    function refreshDropzonerInvitationInbox() {
+        var view = invitationDialog;
+        if (!view || !view.overlay.isConnected) {
+            return;
+        }
+        view.check.disabled = invitationCheckActive || view.decisionActive;
+        view.check.setAttribute('aria-busy', String(invitationCheckActive));
+        view.inboxStatus.textContent = view.notice || invitationCheckMessage ||
+            (invitationInbox.length ? '' : 'Nikt jeszcze niczego Ci nie udost\u0119pni\u0142.');
+        view.inboxList.replaceChildren();
+        var savedCodes = savedInvitationCodes();
+        invitationInbox.forEach(function (invite) {
+            var card = invitationElement(view.inboxList, 'article', 'aft-invitation-row');
+            invitationElement(card, 'strong', null, 'Udost\u0119pnia: ' + invite.from);
+            invite.groups.forEach(function (group) {
+                var details = invitationElement(card, 'details', 'aft-invitation-bundle');
+                var name = group.id === UNGROUPED_GROUP_ID ? 'No name' : group.name || 'No name';
+                invitationElement(details, 'summary', null, name + ' \u00b7 ' + group.buttons.length);
+                var items = invitationElement(details, 'ul');
+                group.buttons.forEach(function (button) {
+                    invitationElement(items, 'li', null, button.label + (button.label === button.text ? '' : ' \u00b7 ' + button.text));
+                });
+            });
+            if (invite.history) {
+                var first = formatInvitationDate(invite.history.first);
+                var last = formatInvitationDate(invite.history.last);
+                invitationElement(card, 'div', 'aft-invitation-bundle', 'Historia skan\u00f3w: ' + invite.history.count +
+                    ' \u00b7 ' + first + (first === last ? '' : ' \u2013 ' + last));
+            }
+            var duplicateCodes = invitationDuplicateCodes(invite, new Set(Array.from(savedCodes).concat(invite.remoteDuplicates || [])));
+            var duplicateCount = duplicateCodes.length;
+            if (duplicateCount) {
+                invitationElement(card, 'p', 'aft-invitation-warning', 'Ju\u017c zapisane Drop-Zony: ' + duplicateCount + '.');
+            }
+            var actions = invitationElement(card, 'div', 'aft-invitation-actions');
+            var decline = invitationButton(actions, 'Odrzu\u0107', 'aft-script-dialog-cancel', function () {
+                decideDropzonerInvitation(view, invite, 'decline');
+            });
+            var accept = invitationButton(actions, duplicateCount ? 'Dodaj wszystko' : 'Dodaj', duplicateCount ?
+                'aft-script-dialog-cancel' : 'aft-script-dialog-primary', function () {
+                decideDropzonerInvitation(view, invite, 'accept', duplicateCount ? 'all' : 'auto', duplicateCodes);
+            });
+            decline.disabled = view.decisionActive || invitationCheckActive || invite.state === 'accepting';
+            accept.disabled = view.decisionActive || invitationCheckActive;
+            if (duplicateCount) {
+                var onlyNew = invitationButton(actions, 'Dodaj tylko nowe', 'aft-script-dialog-primary', function () {
+                    decideDropzonerInvitation(view, invite, 'accept', 'new', duplicateCodes);
+                });
+                onlyNew.disabled = accept.disabled;
+            }
+        });
+    }
+
+    function decideDropzonerInvitation(view, invite, action, mode, confirmed) {
+        if (view.decisionActive || invitationCheckActive) {
+            return;
+        }
+        view.decisionActive = true;
+        view.notice = action === 'accept' ? 'Dodawanie danych\u2026' : 'Odrzucanie\u2026';
+        refreshDropzonerInvitationInbox();
+        var body = action === 'accept' ? {
+            mode: mode,
+            localDuplicates: Array.from(new Set(invitationDuplicateCodes(invite, savedInvitationCodes()))),
+            confirmedDuplicates: Array.from(new Set(confirmed || []))
+        } : null;
+        requestDropzonerInvitation(encodeURIComponent(invite.id) + '/' + action, body, function (status, response) {
+            view.decisionActive = false;
+            if (status === 200 && response) {
+                invitationInbox = invitationInbox.filter(function (entry) { return entry.id !== invite.id; });
+                if (action === 'accept') {
+                    userProfileSyncRemoteRevision = Math.max(userProfileSyncRemoteRevision, Number(response.revision) || 0);
+                    mergeReceivedInvitationGroups(response.groups);
+                    mergeReceivedInvitationHistory(response, response.history);
+                    view.notice = 'Zako\u0144czono dodawanie danych.';
+                } else {
+                    view.notice = 'Zaproszenie odrzucone.';
+                }
+                updateInvitationBadges();
+            } else if (response && response.error === 'duplicate_drop_zones') {
+                invite.remoteDuplicates = Array.isArray(response.duplicateCodes) ? response.duplicateCodes : [];
+                view.notice = 'Wybierz, co zrobi\u0107 z zapisanymi Drop-Zonami.';
+            } else {
+                view.notice = invitationError(status, response);
+            }
+            refreshDropzonerInvitationInbox();
+            if (invitationDialog === view && view.overlay.isConnected && !view.inboxPanel.hidden) {
+                view.check.focus();
+            }
+        });
+    }
+
+    function createInvitationComposer(view, panel) {
+        var form = invitationElement(panel, 'form', 'aft-invitation-form');
+        var label = invitationElement(form, 'label', 'aft-script-dialog-field');
+        invitationElement(label, 'span', null, 'Login odbiorcy');
+        var recipient = invitationElement(label, 'input');
+        recipient.name = 'recipient';
+        recipient.autocomplete = 'off';
+        recipient.maxLength = 64;
+        recipient.required = true;
+        invitationElement(form, 'strong', null, 'Wybierz Drop-Zony');
+        var groups = invitationElement(form, 'div', 'aft-invitation-list');
+        var shareableGroups = JSON.parse(JSON.stringify(scanGroups));
+        var rows = shareableGroups.filter(function (group) { return group.buttons.length; }).map(function (group, index) {
+            var row = invitationElement(groups, 'section', 'aft-invitation-row');
+            var header = invitationElement(row, 'div', 'aft-invitation-group-head');
+            var title = invitationElement(header, 'label', 'aft-invitation-option');
+            var toggle = invitationElement(title, 'input');
+            toggle.type = 'checkbox';
+            var name = group.id === UNGROUPED_GROUP_ID ? 'No name' : group.name;
+            invitationElement(title, 'strong', null, name);
+            var count = invitationElement(title, 'span', 'aft-invitation-quantity');
+            var options = invitationElement(row, 'div', 'aft-invitation-options');
+            options.id = 'aft-invitation-options-' + index;
+            options.hidden = true;
+            var expand = invitationButton(header, 'Rozwi\u0144', 'aft-script-dialog-cancel', function () {
+                options.hidden = !options.hidden;
+                expand.textContent = options.hidden ? 'Rozwi\u0144' : 'Zwi\u0144';
+                expand.setAttribute('aria-expanded', String(!options.hidden));
+            });
+            expand.setAttribute('aria-controls', options.id);
+            expand.setAttribute('aria-expanded', 'false');
+            var checks = group.buttons.map(function (button) {
+                var option = invitationElement(options, 'label', 'aft-invitation-option');
+                var check = invitationElement(option, 'input');
+                check.type = 'checkbox';
+                invitationElement(option, 'span', null, button.label);
+                if (button.text !== button.label) {
+                    invitationElement(option, 'code', null, button.text);
+                }
+                check.addEventListener('change', update);
+                return check;
+            });
+            toggle.addEventListener('change', function () {
+                checks.forEach(function (check) { check.checked = toggle.checked; });
+                update();
+            });
+            return { group: group, toggle: toggle, checks: checks, count: count };
+        });
+        if (!rows.length) {
+            invitationElement(groups, 'p', 'aft-invitation-note', 'Brak Drop-Zon do udost\u0119pnienia.');
+        }
+        var historyRow = invitationElement(form, 'div', 'aft-invitation-row');
+        var historyLabel = invitationElement(historyRow, 'label', 'aft-invitation-option');
+        var historyCheck = invitationElement(historyLabel, 'input');
+        historyCheck.type = 'checkbox';
+        invitationElement(historyLabel, 'strong', null, 'Historia skan\u00f3w');
+        var historyRange = invitationElement(historyRow, 'select', 'aft-invitation-range');
+        historyRange.setAttribute('aria-label', 'Zakres historii');
+        invitationElement(historyRange, 'option', null, 'Dzisiaj').value = 'today';
+        invitationElement(historyRange, 'option', null, 'Ca\u0142a historia').value = 'all';
+        var historyNote = invitationElement(historyRow, 'div', 'aft-invitation-note');
+        var historySnapshot = [];
+        historyCheck.addEventListener('change', function () {
+            historySnapshot = historyCheck.checked ? JSON.parse(JSON.stringify(scanHistoryEntries)) : [];
+            update();
+        });
+        historyRange.addEventListener('change', update);
+        var footer = invitationElement(form, 'div', 'aft-invitation-actions');
+        var summary = invitationElement(footer, 'span', 'aft-invitation-quantity');
+        summary.setAttribute('aria-live', 'polite');
+        var send = invitationButton(footer, 'Wy\u015blij', 'aft-script-dialog-primary');
+        send.type = 'submit';
+        var statusText = invitationElement(form, 'div', 'aft-invitation-note');
+        statusText.setAttribute('role', 'status');
+        var sending = false;
+        var lastDraft = null;
+
+        function selection() {
+            return rows.map(function (row) {
+                return {
+                    id: row.group.id,
+                    name: row.group.name,
+                    color: row.group.color,
+                    collapsed: false,
+                    buttons: row.group.buttons.filter(function (_, index) { return row.checks[index].checked; })
+                };
+            }).filter(function (group) { return group.buttons.length; });
+        }
+
+        function historySelection() {
+            if (!historyCheck.checked) return [];
+            var today = historyRange.value === 'today';
+            var formatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Warsaw' });
+            var now = Date.now();
+            var key = formatter.format(now);
+            var cutoff = 0;
+            if (today) {
+                var lower = now - 36 * 60 * 60 * 1000;
+                var upper = now;
+                while (lower + 1 < upper) {
+                    var midpoint = Math.floor((lower + upper) / 2);
+                    if (formatter.format(midpoint) === key) upper = midpoint;
+                    else lower = midpoint;
+                }
+                cutoff = upper;
+            }
+            return historySnapshot.filter(function (entry) {
+                return entry.status !== 'loading' && entry.scannedAt >= cutoff && (!today || entry.scannedAt <= now);
+            });
+        }
+
+        function update() {
+            rows.forEach(function (row) {
+                var count = row.checks.filter(function (check) { return check.checked; }).length;
+                row.toggle.checked = count === row.checks.length;
+                row.toggle.indeterminate = count > 0 && count < row.checks.length;
+                row.count.textContent = count + '/' + row.checks.length;
+            });
+            var selected = selection();
+            var total = selected.reduce(function (count, group) { return count + group.buttons.length; }, 0);
+            var historyCount = historySelection().length;
+            historyRange.hidden = !historyCheck.checked;
+            historyNote.textContent = historyCheck.checked && !historyCount ? 'Brak zako\u0144czonych skan\u00f3w w tym zakresie.' : '';
+            summary.textContent = 'Grupy: ' + selected.length + ' \u00b7 Drop-Zony: ' + total +
+                (historyCheck.checked ? ' \u00b7 Skany: ' + historyCount : '');
+            send.disabled = sending || (!total && !historyCount);
+        }
+
+        form.addEventListener('submit', function (event) {
+            event.preventDefault();
+            if (sending || send.disabled) {
+                return;
+            }
+            if (!invitationProtocolReady) {
+                statusText.textContent = 'Otw\u00f3rz Otrzymane i sprawd\u017a nowe udost\u0119pnienia, aby po\u0142\u0105czy\u0107 si\u0119 z serwerem.';
+                return;
+            }
+            var login = recipient.value.trim().toLowerCase();
+            if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/.test(login) || login === userProfileSyncLogin) {
+                statusText.textContent = invitationError(400, { error: 'invalid_recipient' });
+                recipient.focus();
+                return;
+            }
+            var groupsToSend = selection();
+            var historyToSend = historySelection();
+            var signature = JSON.stringify([login, groupsToSend, historyToSend]);
+            if (!lastDraft || lastDraft.signature !== signature) {
+                lastDraft = { signature: signature, id: crypto.randomUUID() };
+            }
+            var payload = { id: lastDraft.id, recipient: login, groups: groupsToSend, history: historyToSend };
+            if (historyToSend.length > 20000 || new TextEncoder().encode(JSON.stringify(payload)).byteLength > 5 * 1024 * 1024) {
+                statusText.textContent = 'Za du\u017co danych do udost\u0119pnienia. Wybierz mniejszy zakres.';
+                return;
+            }
+            sending = true;
+            statusText.textContent = 'Wysy\u0142anie\u2026';
+            update();
+            requestDropzonerInvitation('send', payload, function (status, response) {
+                sending = false;
+                if (status === 200 || status === 201) {
+                    lastDraft = null;
+                    if (signature === JSON.stringify([recipient.value.trim().toLowerCase(), selection(), historySelection()])) {
+                        rows.forEach(function (row) {
+                            row.checks.forEach(function (check) { check.checked = false; });
+                        });
+                        historyCheck.checked = false;
+                        historySnapshot = [];
+                    }
+                    statusText.textContent = 'Udost\u0119pniono dla: ' + login + '.';
+                } else {
+                    statusText.textContent = invitationError(status, response);
+                }
+                update();
+            });
+        });
+        update();
+    }
+
+    function openDropzonerInvitations() {
+        var view = createAftEditDialog('Udost\u0119pnianie');
+        invitationDialog = view;
+        view.card.classList.add('aft-invitation-dialog');
+        var tabs = invitationElement(view.fields, 'nav', 'aft-invitation-tabs');
+        tabs.setAttribute('aria-label', 'Udost\u0119pnianie');
+        var shareTab = invitationButton(tabs, 'Udost\u0119pnij', 'aft-script-dialog-cancel', function () { show(false); });
+        view.inboxTab = invitationButton(tabs, 'Otrzymane', 'aft-script-dialog-cancel', function () { show(true); });
+        var share = invitationElement(view.fields, 'section');
+        view.inboxPanel = invitationElement(view.fields, 'section');
+        view.check = invitationButton(tabs, '', 'aft-script-dialog-cancel aft-invitation-refresh', function () {
+            view.notice = '';
+            checkDropzonerInvitations();
+        });
+        view.check.title = 'Sprawd\u017a nowe udost\u0119pnienia';
+        view.check.setAttribute('aria-label', view.check.title);
+        view.check.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M5 9a8 8 0 0 1 13-3l2 3M4 15l2 3a8 8 0 0 0 13-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+        view.inboxStatus = invitationElement(view.inboxPanel, 'p', 'aft-invitation-note');
+        view.inboxStatus.setAttribute('role', 'status');
+        view.inboxList = invitationElement(view.inboxPanel, 'div', 'aft-invitation-list');
+        createInvitationComposer(view, share);
+        invitationButton(view.actions, 'Zamknij', 'aft-script-dialog-cancel', closeAftEditDialog);
+
+        function show(inbox) {
+            share.hidden = inbox;
+            view.inboxPanel.hidden = !inbox;
+            view.check.hidden = !inbox;
+            shareTab.setAttribute('aria-pressed', String(!inbox));
+            view.inboxTab.setAttribute('aria-pressed', String(inbox));
+        }
+
+        updateInvitationBadges();
+        refreshDropzonerInvitationInbox();
+        show(invitationInbox.length > 0);
+        (invitationInbox.length ? view.inboxTab : shareTab).focus();
     }
     function activateAgeDropZone(buttonId, dropZoneText, dropZoneLabel) {
         if (trimText(activeAgeDropZoneText).toLowerCase() !== trimText(dropZoneText).toLowerCase()) {
@@ -2746,6 +3346,10 @@
     }
 
     function exportScanHistoryXlsx() {
+        var selection = getScanHistorySelectionTable();
+        if (selection) {
+            return exportSelectedScanHistoryXlsx(selection);
+        }
         var xlsx = getXlsxLibrary();
         var rows = [[
             'Data',
@@ -4333,6 +4937,7 @@
         list.id = 'aft-scan-history-list';
         list.className = 'aft-scan-history-list';
         cachedElements[list.id] = list;
+        installScanHistorySelection(list);
 
         actions.appendChild(filterBtn);
         actions.appendChild(exportBtn);
@@ -4357,6 +4962,420 @@
         }, true);
         return box;
     }
+    var historyCellSelection = new Map();
+    var historySelectionDrag = null;
+    var historySelectionClick = false;
+    var historySelectionContext = false;
+    var historySelectionEventsInstalled = false;
+    var historySelectionControlKeys = new Set();
+    var historyOutlineViews = new WeakMap();
+
+    function hasHistorySelectionControl(event) {
+        return Boolean(event.ctrlKey || (event.getModifierState && event.getModifierState('Control')) ||
+            historySelectionControlKeys.size);
+    }
+
+    function historySelectionRows(list) {
+        return Array.from(list.children).filter(function (row) {
+            return row.hasAttribute('data-scan-history-id');
+        });
+    }
+
+    function historySelectionPoint(list, target, indexes, clientX) {
+        var row = target && target.closest && target.closest('[data-scan-history-id]');
+        if (!row || row.parentElement !== list) {
+            return null;
+        }
+        var index = indexes.get(row);
+        if (index === undefined) return null;
+        var columns = list.querySelector('.aft-scan-history-columns') || row;
+        var edges = getHistoryOutlineColumns(columns);
+        if (!edges.length) return null;
+        var column = 0;
+        while (column + 2 < edges.length && clientX >= edges[column + 1]) column++;
+        return { row: index, column: column };
+    }
+
+    function changeHistorySelectionRange(base, rows, start, end, subtract) {
+        var selection = new Map(base);
+        var mask = 0;
+        var column;
+        for (column = Math.min(start.column, end.column); column <= Math.max(start.column, end.column); column++) {
+            mask |= 1 << column;
+        }
+        for (var i = Math.min(start.row, end.row); i <= Math.max(start.row, end.row); i++) {
+            var id = rows[i].getAttribute('data-scan-history-id');
+            var previous = selection.get(id) || 0;
+            var remaining = subtract ? previous & ~mask : previous | mask;
+            if (remaining) selection.set(id, remaining);
+            else selection.delete(id);
+        }
+        return selection;
+    }
+
+    function getHistoryOutlineColumns(row) {
+        var boxes = Array.from(row.children).map(function (cell) { return cell.getBoundingClientRect(); });
+        if (!boxes.length) return [];
+        var rowRect = row.getBoundingClientRect();
+        var edges = [Math.max(rowRect.left, boxes[0].left - (boxes[1] ? (boxes[1].left - boxes[0].right) / 2 : 0))];
+        for (var i = 1; i < boxes.length; i++) edges.push((boxes[i - 1].right + boxes[i].left) / 2);
+        var last = boxes[boxes.length - 1];
+        var prior = boxes[boxes.length - 2];
+        edges.push(Math.min(rowRect.right, last.right + (prior ? (last.left - prior.right) / 2 : 0)));
+        return edges;
+    }
+
+    function appendHistoryOutlineCell(path, x, y, right, bottom, sides) {
+        var radius = Math.min(4, (right - x) / 2, (bottom - y) / 2);
+        var tl = sides.top && sides.left ? radius : 0;
+        var tr = sides.top && sides.right ? radius : 0;
+        var bl = sides.bottom && sides.left ? radius : 0;
+        var br = sides.bottom && sides.right ? radius : 0;
+        if (tl) path.push('M', x, y + tl, 'Q', x, y, x + tl, y);
+        if (tr) path.push('M', right - tr, y, 'Q', right, y, right, y + tr);
+        if (bl) path.push('M', x, bottom - bl, 'Q', x, bottom, x + bl, bottom);
+        if (br) path.push('M', right - br, bottom, 'Q', right, bottom, right, bottom - br);
+        path.push('M', x + tl, y, 'H', right - tr, 'M', x, y + tl, 'V', bottom - bl);
+        if (sides.right) path.push('M', right, y + tr, 'V', bottom - br);
+        if (sides.bottom) path.push('M', x + bl, bottom, 'H', right - br);
+    }
+
+    function drawHistorySelection(list) {
+        var view = historyOutlineViews.get(list);
+        if (!view || !list.isConnected || !list.parentElement) return;
+        if (!historyCellSelection.size) {
+            if (view.svg) view.svg.setAttribute('hidden', '');
+            return;
+        }
+        var rect = list.getBoundingClientRect();
+        var columns = list.querySelector('.aft-scan-history-columns');
+        var rows = view.rows || (view.rows = historySelectionRows(list));
+        var left = rect.left + list.clientLeft;
+        var top = Math.max(rect.top + list.clientTop, columns ? columns.getBoundingClientRect().bottom : rect.top);
+        var width = list.clientWidth;
+        var height = rect.top + list.clientTop + list.clientHeight - top;
+        if (!rows.length || width <= 0 || height <= 0) {
+            if (view.svg) view.svg.setAttribute('hidden', '');
+            return;
+        }
+        var edges = getHistoryOutlineColumns(columns || rows[0]);
+        var scale = window.devicePixelRatio || 1;
+        function snap(value) { return (Math.round(value * scale - 0.5) + 0.5) / scale; }
+        var x = edges.map(function (edge) { return snap(edge) - left; });
+        function mask(row) {
+            return row ? historyCellSelection.get(row.getAttribute('data-scan-history-id')) || 0 : 0;
+        }
+        var low = 0;
+        var high = rows.length;
+        while (low < high) {
+            var middle = (low + high) >> 1;
+            if (rows[middle].getBoundingClientRect().bottom <= top) low = middle + 1;
+            else high = middle;
+        }
+        var path = [];
+        for (var i = low; i < rows.length; i++) {
+            var bounds = rows[i].getBoundingClientRect();
+            if (bounds.top >= top + height) break;
+            var selected = mask(rows[i]);
+            if (!selected) continue;
+            var above = mask(rows[i - 1]);
+            var below = mask(rows[i + 1]);
+            var y = snap(bounds.top) - top;
+            var bottom = snap(bounds.bottom) - top;
+            for (var column = 0; column + 1 < x.length; column++) {
+                var bit = 1 << column;
+                if (!(selected & bit)) continue;
+                appendHistoryOutlineCell(path, x[column], y, x[column + 1], bottom, {
+                    top: !(above & bit), left: !(selected & (bit >> 1)),
+                    right: !(selected & (bit << 1)), bottom: !(below & bit)
+                });
+            }
+        }
+        if (!path.length) {
+            if (view.svg) view.svg.setAttribute('hidden', '');
+            return;
+        }
+        var host = list.parentElement;
+        if (!view.svg) {
+            var ns = 'http://www.w3.org/2000/svg';
+            view.svg = document.createElementNS(ns, 'svg');
+            view.svg.classList.add('aft-history-selection-outline');
+            view.svg.setAttribute('aria-hidden', 'true');
+            view.path = document.createElementNS(ns, 'path');
+            view.svg.appendChild(view.path);
+            host.classList.add('aft-history-outline-host');
+            host.appendChild(view.svg);
+        }
+        var origin = host.getBoundingClientRect();
+        view.svg.style.left = (left - origin.left - host.clientLeft) + 'px';
+        view.svg.style.top = (top - origin.top - host.clientTop) + 'px';
+        view.svg.setAttribute('width', String(width));
+        view.svg.setAttribute('height', String(height));
+        view.path.setAttribute('d', path.join(' '));
+        view.svg.removeAttribute('hidden');
+    }
+
+    function applyHistorySelectionRange(drag, point) {
+        if (drag.end && drag.end.row === point.row && drag.end.column === point.column) {
+            return;
+        }
+        drag.end = point;
+        historyCellSelection = changeHistorySelectionRange(drag.base, drag.rows, drag.start, point, drag.subtract);
+        drawHistorySelection(drag.list);
+    }
+
+    function finishHistorySelection() {
+        if (historySelectionDrag) {
+            historySelectionDrag.list.classList.remove('aft-history-cell-dragging');
+            historySelectionDrag = null;
+        }
+    }
+
+    function clearHistoryCellSelection() {
+        finishHistorySelection();
+        if (!historyCellSelection.size) {
+            return;
+        }
+        var list = getCachedElement('aft-scan-history-list');
+        historyCellSelection.clear();
+        if (list) {
+            drawHistorySelection(list);
+        }
+    }
+
+    function buildHistorySelectionTable(rows, entries, selection, headings) {
+        var columns = [];
+        var visible = [];
+        var mask = 0;
+        rows.forEach(function (row) {
+            var id = row.getAttribute('data-scan-history-id');
+            var selected = selection.get(id);
+            if (selected && entries.has(id)) {
+                visible.push({ entry: entries.get(id), selected: selected });
+                mask |= selected;
+            }
+        });
+        if (!visible.length) {
+            return null;
+        }
+        headings.forEach(function (_, index) {
+            if (mask & (1 << index)) columns.push(index);
+        });
+        var output = [columns.map(function (index) { return headings[index]; })];
+        visible.forEach(function (item) {
+            var entry = item.entry;
+            var values = [
+                formatScanHistoryTime(entry.scannedAt), getScanHistoryDestination(entry),
+                entry.containerId, entry.ageText, getScanHistoryEntryQuantity(entry)
+            ];
+            output.push(columns.map(function (index) {
+                return (item.selected & (1 << index)) ? values[index] : null;
+            }));
+        });
+        return output;
+    }
+
+    function getScanHistorySelectionTable() {
+        var list = getCachedElement('aft-scan-history-list');
+        if (!list || !historyCellSelection.size) {
+            return null;
+        }
+        var headings = Array.from(list.querySelectorAll('.aft-scan-history-column-label')).map(function (label) {
+            return label.textContent;
+        });
+        var entries = new Map(scanHistoryEntries.map(function (entry) { return [entry.id, entry]; }));
+        return buildHistorySelectionTable(historySelectionRows(list), entries, historyCellSelection, headings);
+    }
+
+    function historyClipboardText(rows) {
+        return rows.map(function (row) {
+            return row.map(function (value) {
+                var text = value === null || value === undefined ? '' : String(value);
+                if (typeof value === 'string' && /^[=+\-@]/.test(text.trimStart())) {
+                    text = "'" + text;
+                }
+                return /[\r\n\t"]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+            }).join('\t');
+        }).join('\r\n');
+    }
+
+    function historyClipboardHtml(rows) {
+        var escape = function (value) {
+            return String(value === null || value === undefined ? '' : value)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        };
+        return '<table>' + rows.map(function (row, index) {
+            var tag = index ? 'td' : 'th';
+            return '<tr>' + row.map(function (value) {
+                var style = typeof value === 'string' ? ' style="mso-number-format:\'\\@\';"' : '';
+                return '<' + tag + style + '>' + escape(value) + '</' + tag + '>';
+            }).join('') + '</tr>';
+        }).join('') + '</table>';
+    }
+
+    function exportSelectedScanHistoryXlsx(rows) {
+        var xlsx = getXlsxLibrary();
+        if (!xlsx) {
+            loadXlsxLibraryForExport(function () { exportSelectedScanHistoryXlsx(rows); });
+            return false;
+        }
+        var sheet = xlsx.utils.aoa_to_sheet(rows);
+        sheet['!cols'] = rows[0].map(function (heading) { return { wch: heading === 'Kontener' ? 28 : 18 }; });
+        sheet['!autofilter'] = { ref: 'A1:' + String.fromCharCode(64 + rows[0].length) + rows.length };
+        var workbook = xlsx.utils.book_new();
+        xlsx.utils.book_append_sheet(workbook, sheet, 'Historia skanowania');
+        var date = new Date().toISOString().slice(0, 10);
+        xlsx.writeFile(workbook, 'dropzoner-history-selection-' + date + '.xlsx', { compression: true });
+        return true;
+    }
+
+    function installScanHistorySelection(list) {
+        list.tabIndex = -1;
+        list.title = 'Ctrl: zaznacz kom\u00f3rki. Ctrl+Shift lub Ctrl+prawy przycisk: usu\u0144 zaznaczenie kom\u00f3rek. Ctrl+C: kopiuj.';
+        list.addEventListener('pointerdown', function (event) {
+            if (!hasHistorySelectionControl(event) || (event.button !== 0 && event.button !== 2) || event.isPrimary === false) {
+                return;
+            }
+            var rows = historySelectionRows(list);
+            var indexes = new Map(rows.map(function (row, index) { return [row, index]; }));
+            var point = historySelectionPoint(list, event.target, indexes, event.clientX);
+            if (!point) {
+                return;
+            }
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            historySelectionClick = true;
+            historySelectionContext = event.button === 2;
+            var subtract = historySelectionContext || event.shiftKey ||
+                Boolean(event.getModifierState && event.getModifierState('Shift'));
+            list.focus({ preventScroll: true });
+            var textSelection = window.getSelection();
+            if (textSelection) textSelection.removeAllRanges();
+            historySelectionDrag = {
+                list: list, pointer: event.pointerId, start: point, rows: rows, indexes: indexes,
+                base: historyCellSelection, subtract: subtract
+            };
+            list.classList.add('aft-history-cell-dragging');
+            applyHistorySelectionRange(historySelectionDrag, point);
+        }, true);
+        list.addEventListener('click', function (event) {
+            if (historySelectionClick) {
+                historySelectionClick = false;
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            }
+        }, true);
+        function suppressSelectionContext(event) {
+            if (!historySelectionContext) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }
+        list.addEventListener('contextmenu', suppressSelectionContext, true);
+        list.addEventListener('auxclick', suppressSelectionContext, true);
+        var view = { rows: null, svg: null, path: null, frame: 0 };
+        historyOutlineViews.set(list, view);
+        function redraw() {
+            if (!historyCellSelection.size || view.frame) return;
+            view.frame = window.requestAnimationFrame(function () {
+                view.frame = 0;
+                drawHistorySelection(list);
+            });
+        }
+        new MutationObserver(function () {
+            view.rows = null;
+            if (historySelectionDrag && historySelectionDrag.list === list) finishHistorySelection();
+            redraw();
+        }).observe(list, { childList: true });
+        list.addEventListener('scroll', redraw, { passive: true });
+        new ResizeObserver(redraw).observe(list);
+
+        if (historySelectionEventsInstalled) {
+            return;
+        }
+        historySelectionEventsInstalled = true;
+        document.addEventListener('pointerdown', function (event) {
+            historySelectionClick = false;
+            historySelectionContext = false;
+            if (!hasHistorySelectionControl(event) && !(event.target.closest && event.target.closest('#aft-scan-history-export'))) {
+                clearHistoryCellSelection();
+            }
+        }, true);
+        document.addEventListener('pointermove', function (event) {
+            var drag = historySelectionDrag;
+            if (!drag || drag.pointer !== event.pointerId) return;
+            if (!hasHistorySelectionControl(event)) {
+                finishHistorySelection();
+                return;
+            }
+            var point = historySelectionPoint(drag.list, event.target, drag.indexes, event.clientX);
+            if (point) applyHistorySelectionRange(drag, point);
+        }, true);
+        function finishPointer(event) {
+            if (historySelectionDrag && historySelectionDrag.pointer === event.pointerId) finishHistorySelection();
+        }
+        document.addEventListener('pointerup', finishPointer, true);
+        document.addEventListener('pointercancel', finishPointer, true);
+        function isControlKey(event) {
+            return event.key === 'Control' || event.code === 'ControlLeft' || event.code === 'ControlRight';
+        }
+        function resetControlKeys() {
+            historySelectionControlKeys.clear();
+            finishHistorySelection();
+        }
+        window.addEventListener('keydown', function (event) {
+            if (isControlKey(event)) historySelectionControlKeys.add(event.code || 'Control');
+        }, true);
+        window.addEventListener('keyup', function (event) {
+            if (!isControlKey(event)) return;
+            historySelectionControlKeys.delete(event.code || 'Control');
+            if (!event.ctrlKey && !(event.getModifierState && event.getModifierState('Control'))) resetControlKeys();
+        }, true);
+        window.addEventListener('blur', resetControlKeys);
+        document.addEventListener('visibilitychange', function () {
+            if (document.hidden) resetControlKeys();
+        });
+        document.addEventListener('keydown', function (event) {
+            if (!hasHistorySelectionControl(event) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'c' ||
+                    isEditableHotkeyTarget(event.target)) {
+                return;
+            }
+            var rows = getScanHistorySelectionTable();
+            if (!rows) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            var copied = false;
+            try {
+                copied = document.execCommand('copy');
+            } catch (e) {}
+            if (!copied && typeof GM_setClipboard === 'function') {
+                GM_setClipboard(historyClipboardText(rows), 'text');
+            }
+        }, true);
+        document.addEventListener('copy', function (event) {
+            if (!event.clipboardData || isEditableHotkeyTarget(event.target)) return;
+            var rows = getScanHistorySelectionTable();
+            if (!rows) return;
+            event.clipboardData.setData('text/plain', historyClipboardText(rows));
+            event.clipboardData.setData('text/html', historyClipboardHtml(rows));
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }, true);
+
+        var style = document.createElement('style');
+        style.textContent = [
+            '.aft-history-outline-host { position: relative; }',
+            '.aft-history-selection-outline {',
+            '  position: absolute; pointer-events: none; overflow: hidden; z-index: 2;',
+            '  --aft-selection-peach: var(--aft-light-peach, #E07B5B);',
+            '}',
+            '.aft-history-selection-outline[hidden] { display: none !important; }',
+            'html.aft-auto-dropzone-dark .aft-history-selection-outline { --aft-selection-peach: #F0A68F; }',
+            '.aft-history-selection-outline path { fill: none; stroke: var(--aft-selection-peach); stroke-width: 1px; }',
+            '.aft-history-cell-dragging, .aft-history-cell-dragging * { user-select: none !important; }'
+        ].join('\n');
+        document.head.appendChild(style);
+    }
+
     function makeButton(text, title, onClick) {
         var btn = document.createElement('button');
         btn.type = 'button';
@@ -6329,7 +7348,326 @@ html.aft-auto-dropzone-dark #aft-scan-buttons-panel .aft-scan-history-missing .a
 #aft-latest-quantity-box.aft-latest-age-error,
 #aft-latest-quantity-box.aft-latest-age-missing {
   border-color: #465564;
-}`;
+}
+
+
+.aft-invitation-dialog {
+  --invitation-surface: var(--aft-light-surface-raised, #FCFAF6);
+  --invitation-muted: var(--aft-light-text-soft, #555A60);
+  --invitation-border: var(--aft-light-border, #D4CCC2);
+  --invitation-hover: var(--aft-light-surface-muted, #EEE9E2);
+  --invitation-selected: #F5E4D9;
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+html.aft-auto-dropzone-dark .aft-invitation-dialog {
+  --invitation-surface: #19222E;
+  --invitation-muted: #AAB5BF;
+  --invitation-border: #364351;
+  --invitation-hover: #222C39;
+  --invitation-selected: #412D28;
+}
+.aft-invitation-dialog [hidden], .aft-invitation-badge[hidden] {
+  display: none !important;
+}
+.aft-invitation-tabs, .aft-invitation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+.aft-invitation-tabs {
+  padding-bottom: 12px;
+}
+.aft-invitation-dialog .aft-invitation-tabs button[aria-pressed="true"] {
+  background: var(--invitation-selected);
+  color: inherit;
+  border-color: #E07B5B;
+}
+.aft-invitation-form, .aft-invitation-list {
+  display: grid;
+  gap: 7px;
+}
+.aft-invitation-form .aft-script-dialog-field {
+  margin-bottom: 3px;
+}
+.aft-invitation-row {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--invitation-border);
+  border-radius: 8px;
+  background: var(--invitation-surface);
+  overflow-wrap: anywhere;
+}
+.aft-invitation-row:has(.aft-invitation-group-head input:checked),
+.aft-invitation-row:has(.aft-invitation-group-head input:indeterminate) {
+  border-color: #E07B5B;
+}
+.aft-invitation-group-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+.aft-invitation-group-head button {
+  min-height: 29px;
+  padding: 0 7px;
+  font-size: 12px;
+}
+.aft-invitation-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 30px;
+  overflow-wrap: anywhere;
+}
+.aft-invitation-option input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: #E07B5B;
+}
+.aft-invitation-options {
+  margin-top: 7px;
+  padding: 3px 0 0 13px;
+  border-top: 1px solid var(--invitation-border);
+}
+.aft-invitation-options code {
+  margin-inline-start: auto;
+  color: var(--invitation-muted);
+}
+.aft-invitation-actions {
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.aft-invitation-quantity {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.aft-invitation-quantity, .aft-invitation-note {
+  color: var(--invitation-muted);
+  font-size: 12px;
+}
+.aft-invitation-option .aft-invitation-quantity {
+  margin-inline-start: auto;
+}
+.aft-invitation-actions > .aft-invitation-quantity {
+  margin-inline-end: auto;
+}
+.aft-invitation-note {
+  margin: 7px 0;
+}
+.aft-invitation-note:empty {
+  display: none;
+}
+.aft-invitation-bundle {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: var(--invitation-hover);
+}
+.aft-invitation-bundle ul {
+  margin: 4px 0;
+  padding-inline-start: 18px;
+}
+.aft-invitation-badge {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  margin-inline-start: 5px;
+  place-items: center;
+  border-radius: 5px;
+  background: #E07B5B;
+  color: #231714;
+  font: 700 11px/1 Arial, sans-serif;
+}
+.aft-invitation-dialog button:disabled {
+  opacity: .58;
+}
+.aft-invitation-tabs .aft-invitation-refresh {
+  display: inline-grid;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  padding: 0;
+  margin-inline-start: auto;
+  place-items: center;
+  color: inherit;
+  border-color: var(--invitation-border);
+  background: var(--invitation-surface);
+}
+.aft-invitation-refresh:hover:not(:disabled) {
+  background: var(--invitation-hover);
+}
+.aft-invitation-refresh[aria-busy="true"] svg {
+  animation: aft-invitation-spin .85s linear infinite;
+}
+@keyframes aft-invitation-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aft-invitation-refresh[aria-busy="true"] svg {
+    animation: none;
+  }
+}
+.aft-invitation-range {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 4px;
+  padding: 0 7px;
+  border: 1px solid var(--invitation-border);
+  border-radius: 6px;
+  background: var(--invitation-surface);
+  color: inherit;
+}
+.aft-invitation-warning {
+  margin: 8px 0 2px;
+  color: var(--invitation-muted);
+  font-weight: 600;
+}
+
+.aft-dropzone-create-dialog {
+  width: min(680px, 94vw);
+  --form-surface: #FCFAF6;
+  --form-hover: #EEE9E2;
+  --form-text: #292C30;
+  --form-muted: #555A60;
+  --form-border: #D4CCC2;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+html.aft-auto-dropzone-dark .aft-dropzone-create-dialog {
+  --form-surface: #0D1218;
+  --form-hover: #222C39;
+  --form-text: #EFF4F8;
+  --form-muted: #AAB5BF;
+  --form-border: #364351;
+}
+.aft-dropzone-create-dialog [hidden] { display: none !important; }
+.aft-dropzone-mode { display: flex; gap: 7px; margin: 0 0 14px; }
+.aft-dropzone-mode button,
+.aft-group-picker-trigger,
+.aft-group-picker-option {
+  font: 600 14px Arial, sans-serif;
+  color: var(--form-text);
+  background: var(--form-surface);
+  border: 1px solid var(--form-border);
+  border-radius: 8px;
+  min-height: 38px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+#aft-scan-buttons-panel #aft-script-dialog-overlay .aft-dropzone-mode button[aria-pressed="true"] {
+  border-color: #E07B5B !important;
+  box-shadow: inset 0 0 0 1px #E07B5B !important;
+}
+.aft-group-picker { position: relative; min-width: 0; }
+.aft-group-picker-trigger { width: 100%; text-align: left; padding-right: 35px; position: relative; }
+.aft-group-picker-trigger::after {
+  content: '';
+  position: absolute;
+  right: 15px;
+  top: 13px;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 180ms ease;
+}
+.aft-group-picker-open .aft-group-picker-trigger::after { transform: translateY(3px) rotate(225deg); }
+.aft-group-picker-popup {
+  --form-surface: #FCFAF6;
+  --form-hover: #EEE9E2;
+  --form-text: #292C30;
+  --form-border: #D4CCC2;
+  position: fixed;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-5px);
+  transition: grid-template-rows 180ms ease, opacity 180ms ease, transform 180ms ease, visibility 180ms;
+}
+.aft-group-picker-popup-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+.aft-group-picker-popup.aft-group-picker-dark {
+  --form-surface: #11161D;
+  --form-hover: #222C39;
+  --form-text: #EFF4F8;
+  --form-border: #364351;
+}
+.aft-group-picker-above { transform: translateY(5px); }
+.aft-group-picker-above.aft-group-picker-popup-open { transform: translateY(0); }
+.aft-group-picker-options { min-height: 0; overflow: hidden; border-radius: 8px; background: var(--form-surface); }
+.aft-group-picker-popup-open .aft-group-picker-options {
+  overflow-y: auto;
+  border: 1px solid var(--form-border);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+  scrollbar-width: thin;
+  padding: 4px;
+}
+.aft-group-picker-option {
+  width: 100%;
+  display: block;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+}
+#aft-scan-buttons-panel #aft-script-dialog-overlay .aft-group-picker-option {
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: var(--form-surface) !important;
+  color: var(--form-text) !important;
+}
+#aft-scan-buttons-panel #aft-script-dialog-overlay .aft-group-picker-option + .aft-group-picker-option {
+  border-top: 1px solid var(--form-border) !important;
+}
+#aft-scan-buttons-panel #aft-script-dialog-overlay .aft-group-picker-option:hover,
+#aft-scan-buttons-panel #aft-script-dialog-overlay .aft-group-picker-option:focus-visible,
+#aft-scan-buttons-panel #aft-script-dialog-overlay .aft-group-picker-option[aria-selected="true"] {
+  background: var(--form-hover) !important;
+}
+.aft-group-picker-option:hover,
+.aft-group-picker-option:focus-visible,
+.aft-group-picker-option[aria-selected="true"] { background: var(--form-hover) !important; }
+#aft-scan-buttons-panel #aft-script-dialog-overlay .aft-group-picker-option[aria-selected="true"] {
+  color: #B95F46 !important;
+  box-shadow: inset 0 0 0 1px #E07B5B !important;
+  border-radius: 7px;
+}
+html.aft-auto-dropzone-dark #aft-scan-buttons-panel #aft-script-dialog-overlay .aft-group-picker-option[aria-selected="true"] { color: #F0A68F !important; }
+.aft-bulk-dropzone-list { display: grid; gap: 8px; }
+.aft-bulk-dropzone-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.aft-bulk-dropzone-row input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--form-border);
+  border-radius: 8px;
+  color: var(--form-text);
+  background: var(--form-surface);
+  font: 600 14px Arial, sans-serif;
+}
+.aft-bulk-dropzone-head { color: var(--form-muted); font: 600 12px Arial, sans-serif; margin-bottom: 7px; }
+.aft-bulk-dropzone-row input:focus-visible,
+.aft-group-picker-trigger:focus-visible,
+.aft-group-picker-option:focus-visible,
+.aft-dropzone-mode button:focus-visible { outline: 2px solid #E07B5B; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .aft-group-picker-popup, .aft-group-picker-trigger::after { transition: none; }
+}
+`;
         document.head.appendChild(style);
         cachedElements[style.id] = style;
     }
@@ -8630,6 +9968,54 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
 html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft-scan-history-sort-active {
   background: transparent !important;
   color: #EFF4F8 !important;
+}
+
+html.aft-compact-move-layout #aft-profile-loading-overlay {
+  display: flex;
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  cursor: wait;
+  background: linear-gradient(135deg, rgba(38,34,31,0.48), rgba(18,17,16,0.62));
+  backdrop-filter: none;
+}
+html.aft-compact-move-layout #aft-profile-loading-overlay .aft-window-focus-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 48px));
+  padding: 22px 28px;
+  border: 1px solid rgba(224,123,91,0.78);
+  border-radius: 16px;
+  background: rgba(248,245,240,0.94);
+  color: #292C30;
+  box-shadow: 0 18px 48px rgba(25,22,20,0.26);
+  text-align: center;
+}
+html.aft-compact-move-layout #aft-profile-loading-overlay .aft-window-focus-message strong {
+  font: 800 clamp(20px, 4vw, 30px)/1.05 Arial, sans-serif;
+  letter-spacing: 0.04em;
+}
+html.aft-compact-move-layout #aft-profile-loading-overlay .aft-window-focus-message span {
+  color: #665E58;
+  font: 600 14px/1.25 Arial, sans-serif;
+}
+html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-profile-loading-overlay {
+  background: rgba(3,6,9,0.58);
+}
+html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-profile-loading-overlay .aft-window-focus-message {
+  background: rgba(17,22,29,0.96);
+  color: #EFF4F8;
+  border-color: rgba(224,123,91,0.82);
+  box-shadow: 0 20px 54px rgba(0,0,0,0.46);
+}
+html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-profile-loading-overlay .aft-window-focus-message span {
+  color: #B8C2CC;
 }`;
         document.head.appendChild(style);
         cachedElements[style.id] = style;
@@ -11333,6 +12719,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
     function closeAftEditDialog() {
         var overlay = getCachedElement('aft-script-dialog-overlay');
         if (overlay && overlay.parentNode) {
+            if (overlay.__aftDialogCleanup) overlay.__aftDialogCleanup();
             overlay.parentNode.removeChild(overlay);
         }
         delete cachedElements['aft-script-dialog-overlay'];
@@ -12412,6 +13799,236 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         };
         reader.readAsText(file);
     }
+    function createDropZoneGroupPicker(select, dialog) {
+        var host = document.createElement('div');
+        host.className = 'aft-group-picker';
+        var trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.className = 'aft-group-picker-trigger';
+        trigger.setAttribute('aria-haspopup', 'listbox');
+        trigger.setAttribute('aria-expanded', 'false');
+        trigger.setAttribute('aria-label', 'Grupa');
+        var content = document.createElement('div');
+        content.className = 'aft-group-picker-popup';
+        var list = document.createElement('div');
+        list.className = 'aft-group-picker-options';
+        list.id = makeId('group-options');
+        list.setAttribute('role', 'listbox');
+        list.setAttribute('aria-label', 'Grupa');
+        trigger.setAttribute('aria-controls', list.id);
+        content.appendChild(list);
+        select.hidden = true;
+        select.parentNode.insertBefore(host, select);
+        host.appendChild(select);
+        host.appendChild(trigger);
+        dialog.overlay.appendChild(content);
+        var open = false;
+        var active = 0;
+        var buttons = [];
+
+        function setOpen(value, focusTrigger) {
+            open = value;
+            if (open) {
+                var rect = trigger.getBoundingClientRect();
+                var availableBelow = window.innerHeight - rect.bottom - 16;
+                var availableAbove = rect.top - 16;
+                var above = availableBelow < 190 && availableAbove > availableBelow;
+                var height = Math.max(40, Math.min(190, above ? availableAbove : availableBelow));
+                content.style.left = rect.left + 'px';
+                content.style.width = rect.width + 'px';
+                content.style.top = above ? 'auto' : (rect.bottom + 5) + 'px';
+                content.style.bottom = above ? (window.innerHeight - rect.top + 5) + 'px' : 'auto';
+                list.style.maxHeight = height + 'px';
+                content.classList.toggle('aft-group-picker-above', above);
+                content.classList.toggle('aft-group-picker-dark', isDarkModeEnabled());
+            }
+            host.classList.toggle('aft-group-picker-open', open);
+            content.classList.toggle('aft-group-picker-popup-open', open);
+            trigger.setAttribute('aria-expanded', String(open));
+            content.inert = !open;
+            if (open && buttons[active]) buttons[active].focus({ preventScroll: true });
+            if (!open && focusTrigger) trigger.focus();
+        }
+
+        function refresh() {
+            list.replaceChildren();
+            buttons = Array.from(select.options).map(function (option, index) {
+                var button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'aft-group-picker-option';
+                button.textContent = option.textContent;
+                button.setAttribute('role', 'option');
+                button.setAttribute('aria-selected', String(option.value === select.value));
+                button.addEventListener('click', function () {
+                    select.value = option.value;
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                    setOpen(false, true);
+                });
+                list.appendChild(button);
+                if (option.value === select.value) active = index;
+                return button;
+            });
+            trigger.textContent = select.selectedOptions[0] ? select.selectedOptions[0].textContent : 'Bez grupy';
+            setOpen(false, false);
+        }
+
+        trigger.addEventListener('click', function () {
+            active = Math.max(0, select.selectedIndex);
+            setOpen(!open, false);
+        });
+        function handleKeys(event) {
+            if (event.key === 'Escape' && open) {
+                event.preventDefault();
+                event.stopPropagation();
+                setOpen(false, true);
+            } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!open) {
+                    active = Math.max(0, select.selectedIndex);
+                    setOpen(true, false);
+                } else if (buttons.length) {
+                    active = (active + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+                    buttons[active].focus();
+                }
+            } else if (event.key === 'Tab') {
+                setOpen(false, false);
+            }
+        }
+        host.addEventListener('keydown', handleKeys);
+        content.addEventListener('keydown', handleKeys);
+        dialog.overlay.addEventListener('pointerdown', function (event) {
+            if (!host.contains(event.target) && !content.contains(event.target)) setOpen(false, false);
+        }, true);
+        function closeOnMove() { if (open) setOpen(false, false); }
+        dialog.card.addEventListener('scroll', closeOnMove, { passive: true });
+        window.addEventListener('resize', closeOnMove);
+        select.addEventListener('change', refresh);
+        var observer = new MutationObserver(refresh);
+        observer.observe(select, { childList: true });
+        dialog.overlay.__aftDialogCleanup = function () {
+            observer.disconnect();
+            window.removeEventListener('resize', closeOnMove);
+        };
+        refresh();
+        return host;
+    }
+
+    function commitBulkDropZones(rows, groupId) {
+        var values = [];
+        for (var i = 0; i < rows.length; i++) {
+            var text = trimText(rows[i].scan.value);
+            var label = trimText(rows[i].label.value);
+            if (!text && !label) continue;
+            if (!text || isDefaultSourceScan(text)) {
+                rows[i].scan.setCustomValidity('Wpisz poprawny tekst skanu.');
+                rows[i].scan.reportValidity();
+                rows[i].scan.focus();
+                return false;
+            }
+            values.push({ text: text, label: label || text });
+        }
+        if (!values.length) {
+            rows[0].scan.focus();
+            return false;
+        }
+        var index = findGroupIndex(groupId);
+        var group = groupId === UNGROUPED_GROUP_ID ? ensureUngroupedGroup() : scanGroups[index];
+        if (!group) return false;
+        values.forEach(function (value) {
+            group.buttons.push({ id: makeId('btn'), text: value.text, label: value.label });
+        });
+        activeGroupId = group.id;
+        saveActiveGroup();
+        saveGroups();
+        updateGroupSelect();
+        renderGroups();
+        return true;
+    }
+
+    function installBulkDropZoneForm(dialog, form, scanInput, nameInput, groupSelect) {
+        var bulk = false;
+        var rows = [];
+        var switcher = document.createElement('div');
+        switcher.className = 'aft-dropzone-mode';
+        switcher.setAttribute('aria-label', 'Tryb dodawania Drop-Zon');
+        var single = document.createElement('button');
+        var many = document.createElement('button');
+        [single, many].forEach(function (button) {
+            button.type = 'button';
+            switcher.appendChild(button);
+        });
+        single.textContent = 'Pojedynczo';
+        many.textContent = 'Wiele naraz';
+        dialog.fields.insertBefore(switcher, form);
+        var panel = document.createElement('div');
+        panel.className = 'aft-bulk-dropzones';
+        panel.hidden = true;
+        var heading = document.createElement('div');
+        heading.className = 'aft-bulk-dropzone-row aft-bulk-dropzone-head';
+        ['Tekst skanu', 'Nazwa (opcjonalnie)'].forEach(function (text) {
+            var label = document.createElement('span');
+            label.textContent = text;
+            heading.appendChild(label);
+        });
+        panel.appendChild(heading);
+        var list = document.createElement('div');
+        list.className = 'aft-bulk-dropzone-list';
+        panel.appendChild(list);
+        var groupField = groupSelect.closest('.aft-script-dialog-field');
+        form.insertBefore(panel, groupField);
+        dialog.card.classList.add('aft-dropzone-create-dialog');
+
+        function addRow() {
+            var row = document.createElement('div');
+            row.className = 'aft-bulk-dropzone-row';
+            var controls = {};
+            ['scan', 'label'].forEach(function (column) {
+                var field = document.createElement('input');
+                field.type = 'text';
+                field.autocomplete = 'off';
+                field.setAttribute('aria-label', (column === 'scan' ? 'Tekst skanu ' : 'Nazwa ') + (rows.length + 1));
+                field.placeholder = column === 'scan' ? 'Tekst skanu' : 'Nazwa (opcjonalnie)';
+                controls[column] = field;
+                field.addEventListener('input', function () { controls.scan.setCustomValidity(''); });
+                field.addEventListener('keydown', function (event) {
+                    if (event.key !== 'Enter' || event.isComposing) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    var next = rows.indexOf(controls) + 1;
+                    if (!rows[next]) addRow();
+                    rows[next][column].focus();
+                    rows[next][column].scrollIntoView({ block: 'nearest' });
+                });
+                row.appendChild(field);
+            });
+            rows.push(controls);
+            list.appendChild(row);
+            return controls;
+        }
+        addRow();
+
+        function changeMode(value) {
+            bulk = value;
+            form.insertBefore(groupField, bulk ? panel : panel.nextSibling);
+            panel.hidden = !bulk;
+            scanInput.closest('label').hidden = bulk;
+            nameInput.closest('label').hidden = bulk;
+            single.setAttribute('aria-pressed', String(!bulk));
+            many.setAttribute('aria-pressed', String(bulk));
+            dialog.card.classList.toggle('aft-dropzone-bulk-mode', bulk);
+            (bulk ? rows[0].scan : scanInput).focus();
+        }
+        single.addEventListener('click', function () { changeMode(false); });
+        many.addEventListener('click', function () { changeMode(true); });
+        single.setAttribute('aria-pressed', 'true');
+        many.setAttribute('aria-pressed', 'false');
+        return {
+            isBulk: function () { return bulk; },
+            focus: function () { (bulk ? rows[0].scan : scanInput).focus(); },
+            save: function () { return commitBulkDropZones(rows, groupSelect.value); }
+        };
+    }
     function getAnimatedHeight(el) {
         var rectHeight = 0;
         try {
@@ -12916,6 +14533,13 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         styleSmallIconButton(importBtn);
         importBtn.style.color = '#315c31';
 
+        var invitationsBtn = makeButton('', 'Udost\u0119pnianie', openDropzonerInvitations);
+        invitationsBtn.id = 'aft-dropzoner-invitations';
+        invitationsBtn.setAttribute('data-aft-menu-label', 'Udost\u0119pnianie');
+        invitationsBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="m4 7 8 6 8-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+        cachedElements[invitationsBtn.id] = invitationsBtn;
+        styleSmallIconButton(invitationsBtn);
+
         var darkModeBtn = makeButton('', 'Tryb ciemny wy\u0142\u0105czony', function () {
             toggleDarkMode();
         });
@@ -12963,7 +14587,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
         header.appendChild(rightHeaderActions);
         panel.appendChild(header);
         panel.appendChild(importFileInput);
-        movePanelActionsIntoCompactMenu([resetBtn, exportBtn, importBtn, darkModeBtn]);
+        movePanelActionsIntoCompactMenu([resetBtn, exportBtn, importBtn, invitationsBtn, darkModeBtn]);
 
         var body = document.createElement('div');
         body.id = 'aft-scan-panel-body';
@@ -13127,6 +14751,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             var newGroupRow = document.createElement('div');
             var newGroupInput = document.createElement('input');
             var createGroupBtn;
+            var bulkForm;
 
             function addField(labelText, control) {
                 var field = document.createElement('label');
@@ -13142,6 +14767,10 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             function saveNewDropZone(event) {
                 if (event) {
                     stopEvent(event);
+                }
+                if (bulkForm && bulkForm.isBulk()) {
+                    if (bulkForm.save()) closeAftEditDialog();
+                    return false;
                 }
                 if (!trimText(scanInput.value) || isDefaultSourceScan(scanInput.value)) {
                     scanInput.focus();
@@ -13168,7 +14797,7 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
                 populateModalGroupSelect(modalGroupSelect, activeGroupId);
                 modalGroupSelect.value = activeGroupId;
                 newGroupInput.value = '';
-                scanInput.focus();
+                if (bulkForm) bulkForm.focus();
                 return false;
             }
 
@@ -13201,6 +14830,8 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
             newGroupField.appendChild(newGroupRow);
             form.appendChild(newGroupField);
             dialog.fields.appendChild(form);
+            bulkForm = installBulkDropZoneForm(dialog, form, scanInput, nameInput, modalGroupSelect);
+            createDropZoneGroupPicker(modalGroupSelect, dialog);
             form.addEventListener('submit', saveNewDropZone);
             addAftDialogButton(dialog.actions, 'Anuluj', 'aft-script-dialog-cancel', closeAftEditDialog);
             addAftDialogButton(dialog.actions, 'Zapisz', 'aft-script-dialog-primary', saveNewDropZone);
@@ -14277,6 +15908,294 @@ html.aft-auto-dropzone-dark.aft-compact-move-layout #aft-scan-buttons-panel .aft
     }
 
     function slowMaintenanceLoop() {
+        var favicon = document.createElement('link');
+        favicon.rel = 'icon';
+        favicon.type = 'image/png';
+        favicon.sizes = '128x128';
+        favicon.href = 'data:image/png;base64,' +
+            'iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMA' +
+            'AA7DAcdvqGQAAFDZSURBVHhejX0HmFfF1f6KjQ5LWdhe2IWld1BgYdlOb0svaowNsUSp2wAp9liS75+iJnZFUUDsMaYYTT5NjNHE' +
+            'RI0xxRijxt4R3/9zzsyZOTP3rvn2eebZ37137pRz3lNn7r0Z+cVD55SUDr+sqGTwZQUl5ZcVlAy+rKjUFvodFb5eUm6Pyy/LLxh4' +
+            'WUGRHOviz9E9pu326kkx/ZaUDvX9p40l5ZwZl9xvCrfp2rNt2vtMnagfdz6s4/8PbWfs0bii8RF9knP3x9yfrW9o6ced7FO1mUp3' +
+            'e13RMzh29w7ktjMKiod8p6x8FAaUDUdJ2TAMSCsDh/P1+BzVLxkwJKpj65UOQymfGxa0K7/pWrtl0AhTBlIx5/QYXB11zfdh6w4c' +
+            'jjIq3NZIDOC2RvB5bneQ/DZ1ff9hv8li7jNzGYqSUjMnPSY9TqZrqR1XTMMyNV9q19En7NOPz1/jutSu0EbRSK57vth21XiKS4di' +
+            'YPkoZBAa6ERRyWBXCovLUaiOiwcM8b/5WK6Vo6i43Py25/heOSd1VBuu3QFD+FxxqS1yTO0MMPV1ofpFJaaN+Joenx/zYJSUDrVM' +
+            'Gpqob/ox7dJvU8y1Ejcec84ch/3quenx6v75WPqhsVsauTZLpf/kGPQ4qS7Xj+Yu/Zr2FU2lX0drKX58hSXlDIQMUgn0wzBOmOgn' +
+            'ERKWJqyZG9Y3vxUAgkGYyehBOjAlCCigkfN+PFwUEPV9/n5/zRAvBkFMaLnHHMs9+jisHwMnHKduyxTflp6/tGvmnzYf3Y5v19w3' +
+            'lEGl+wmESt0n7QgAhD90LoNsJ2sAYaIjor+ZGJKUbLkmDSaBwfcrhoaT8u3SbzIlMnGulyBiOiP8JIdwG15aPbAMAHxdmbwUPzZh' +
+            'viKiHXPYtu/DzC9l3gqUpG4ZBA5UMR2Sx/6c0M8zjcFZSgBQ8yBtouYRt6ULaWHSANQGmwCyC4FkRoRxxTLaE1gQNcijKgaCBU5I' +
+            'yKGG4XriEXG85JqxuPtckXGa31xUHSKIOy/XlHTr4vvUbZtxCUH1NWnPX5c5KPpFYOV7nDmKGeXHx20GjBPBK/ea0s4vbkPuiY+d' +
+            'mabizlsTIACIByWVtPRqLcCTVudDeygSre9Jagi5ZhA5hFGpwcTHighBUf4E/05clzrlKLBtSrtyjxmDGqPSaKlFXysahIKiQfxf' +
+            't+vGnbhX5jQYBcV2TFxPjyW8h845cGgTlqIJua4Ud17RO9YGDHgFAHNBJqIbVsxwA5N68tsci2TQcX7hQGTnDUBWThGy+heib3YR' +
+            '+vanEv1WpU8/KgX8O4vrFKKPXOPrBe56XORe+u/Pmfrt3RMWPZ7k2JJ1fR3uW1+XsXO/vu94PDwnNUddaP79ckqYhnkFZQwS0V5p' +
+            'ABCGx+di/4r5Z89RZGCigLIwChDkuZsCLTAoVClOBQ5mpvfPLeEJ9O5XgN5Z+Vz+KwOyQ0K6YhlqfntwcImJngIQR/AUJrjj/nRd' +
+            'ftN/y1zLxPaLAoBj9n+po8fkxpacB4GGrjENHR0LGBS5BWVW2JKRTcA3VfR1LlYbUHhonMCyYf4mVSFGjfutmV8yGPlFA9Evpwi9' +
+            'svLQiwYbTZInpaQ+MWG6piQ+YDj/jxiXXWTPxYTTbZs6+rwmevo94Vji9gSoaRoibtPXK3Lz4XoyH7kvmkcIzhTA2Os5+QOsGk8H' +
+            'gvBR+OrPCy/LrQYoGXwZIUEDILjJ2vHYF5AGs3NLDFqttAtq40HzhIlxMmknlUJwBRDFdEcITRxbXxNd6mjCh0WuR/1Fkq4Zo89T' +
+            'vSzRVFy89OoS3KPbjdtLEQaZY6Kk1CNak2klPyQNBGQunJAqh1b4SOcoMcR5AO8DhJIvFfWNco5MAakkUfH/l6InHSOfirH7YZ2Y' +
+            'YO6aECsimq+brK/bSTIrCQY6x2Ni5pv/vr94LHEfybbSQWfHo8xfIEQptDDn/Jxz80tNhJLQBN43E79B81gBIPIBxHsPnD1/Y0HR' +
+            'QDtoQwg9eLFfVMhuiSSbyRQEpqC9EhJTmY9INXuiRG0Ko6I2/W9PXN0vMVkYTe2569G5kNG6jZS5uTErAKTOxdPS2f5onA4MEQD6' +
+            '9MtHdl5JKOlWa0tExmrfmXYLgLLhxgmkWDq27WnhC91I4Qt13ruflnwhipaQ5MAdISyhQ4LbunZC0kZI4PZK1I79b5juiR6MLRi3' +
+            'H78H6P8FAL5/XSc4b49d+2n0kHNqTIFgKaDLvSJYRsiMCe6fW+zMgURnHKqrEFBrCAeAeC0gAIAFBqkR+k0D0TaefytixNIbToKI' +
+            'VIys7OKA6d65kknlu35kgu66ajssigkOADI2yzytjVLHHzPLlhikiXFoxmsAhM5vDADpxzNVC44HoFwLx2dK7HPlsDnwql54KPkB' +
+            'ExlYH4CcQFp6jAGgmS8AoJu9zffE1UiNJ+cnplAcEVMX10ZEBPkd1In6c4ziYytJWqKkXW47BEEwNsWsPlaz6JyEBpEfe8RkDURb' +
+            '/Nz82NMAoekZzNHRW407QQMjPJQ3EFNgEmKSvfVOPRUfBloAaCfBM9/cnJ07AL36imrWk0iWdgcf1PMg0ICi894ZNMTT6t0TKYwQ' +
+            'gjEEkm7qp0Ym6no8B2mbfwfA0OONTJTU02PW43b36vYVcDS91Ng0s8P+qb6PrMz9ZkzkpHt1H5oA4mkIAHECVWUDgEH8m1KXMeFk' +
+            '0DSAxODjCbVLXMVoez7hF7jfERPS2tOgcMRTxGffpQA9+uajex/JV/j6cXuJsStmxmNIzCcCQLL4ejRfMwZhuvkfj8eNS0c7ATjN' +
+            'b7pOGcREZKB8AOIrRwEmD2DDwGgRgmJM+t0/r8TZ4pCgAgA7OAGIIlYw2cSAkwzWXnhMAE0UNwY9HicVSkr6FaJXv0J07ZOPDj1z' +
+            'cUyvPBQWDMCAolJ07J2HI3vmMCDCeUVtf0X+ISzh2EWTmfppNPAg8f2Hqt7XV/RNOMfp9CIhdgtearHNaIIEAMIYUkwApXeDWF86' +
+            '0HGw/LZEjwfiCKbsqRx7AKhz+n7VbwCAOKxT/dB/Yuoxmbk4okcuumcVYGx5Oc6pmYgDJ9bi9S0L8XZrIx74Wi1Onz4BpUWlDISj' +
+            'euaipw1d3di57Zjg1nFVzmvA4IixbpztMCqeT7LNkI5Ci5gn+h463z+XtECcG/BC7gBQwsvBVj3QDaT2iwYa6c8l6RfHL2Jo9Fuf' +
+            'c8RzAwwdKj9YNaG4nXYm6c/7372yCtC1dz6O7JmLozLzkJ9fgjnjRuLy+RX49bpZOHzBUuCyVcA31wAXLgd2LjW/L12Jt5obceuq' +
+            'aiyeOBK5eSXo0CMXx/bKQy9lUuK58XF2bLIiQEdgTptrknnSdigYiTGk5AlCehrg0mpjKgCcBuAw0JgAX8k7gNyg7Sh1MpF0aAI5' +
+            '5qXc6+pHqjduxxU7Id1mz775OJalPIdV/OiBg7B2+njsPbEO/2puBC5eCVy+GrhkJb7Yvhh/OG8mbl41CRvrB2PTjCG448QK/GPD' +
+            'bODCZcDlq4CLluPvmxbg+8umY8aYEejVv4jb7tQrj4mt5yRj1EwPfJcgsvDMcW0E55SatzSJ7/F0CWkQX2fpt32Q4HJYaHckaemn' +
+            'wmsBnAkcSPsBLPOVH5BfNCjhPfuB2ME4orTDRLk3MZEQIFLHM1v3I1Kejy69c9GhRw5Lel5+CWaPG4FL51fgyXWzcGj7EsPwK09k' +
+            '5v+7eSEePaMWly8ah1OmlWLmuFxUjeyHulH9UDuqPyqGZ2HehHxsmTEU9548DW81LwAusVpi93I8d+4cXDSvAhXDh6Jr3wIDtN4K' +
+            'DNFYDSMjOgQASDJU08PUV8AK6oQAcf0KcAJQGRPA6wXZRS4E5KJ8PfINGAC0i1QDQLJ+hB5W/84BNIyOB28GkGS2aAcBSuo9cTLD' +
+            'Ilwmm5lVgI69jJR37pOP4WUDcerUsbh9VTVe3bTASPmVJzDTDu9Yij+ePwu3rZmMzTOGovG4AlSN6o/qUf0xa2wO5o3PxbxxuZg7' +
+            'LgdzxuZgzrhczBiTi+kj+mPaiH5YfFwhLpw/Go+dUY2PWhYCl64CrljD5uKJM2ZiY/3xGDFwEDuSBMBuffISIHbMiIRFq3StNbVp' +
+            '5XPalIgDSTSX81HY55bSg/vNGMhxJ7pq7U5FsoVeA2gfwGaJyBcg+5+2vOsYrMMRNfE0ZrdXeKAR8Yiw5JCR107pzZpRw7B7XgWe' +
+            'WDcbn25bYqSUJP2ilXizeQF+urYaVyweh1Onl2HOuBxUjcxC/ej+/Hv++Fwumvlzifmq0DGVmWNyGCxU1lSU4OrF4/HbsxvwJWkW' +
+            '8h8uW4VP2hbjga/X45Rp41FUQP5CNo7qkcPmKDaHPB8F6ECqI/tumCpSXRwxO6Jzoo/wnAiVoW0+R3Ps/Vveyj4BTgULABzjFRD6' +
+            'sRcbMV85XjqN6iYQDFaXcNBusNaB69w7jxnesXc+ykvKsGbKWNywvAp/WT8fuHAFcNWJRjXvWoYX1s/GnSdMQfOsYVg+pQh1o/uh' +
+            'ZlQ/J+XzxxvGzxtHxzmYPyGXC10TABgQZHMxx9l8jYEyPg8zx+agckQW6kZn44yqgbh+xXF46fzZwE7yF1azdnijuRE3raxG48RR' +
+            '6JdTjIzu1l+IVjYdPZR0B9e1/VfH4lOkMVhr3KAPXYfr5XMkp9PDzgkUDUAPJcgePimUBBIGJUo0ANeZSICsnSuUy6BkoBRuHZNp' +
+            'mJ7ZrxCThgzGprrj8PDX6/F+yyIjcVecwCr+nbZFeHxdHb69ZDxOrSzD7PF5zPCG0f2ZYQsm+GIkPgfzx8lve41+j7OgsIVBMIYA' +
+            'kO3OGW2RZ8GSy1qEtAmBYda4XKyvH4z9J03Fv5rmG/NDJuLiFfjLhvn45vwKVA4fiu5ZRTiiZy669CGtYOesfQFlDsw1S8+I0U4L' +
+            'WFrHtHRCaK8JYHSkRdcoNUxqX5gvAh4AQNsIKgIA2Y6kAcDno879wDwIvEND9QvRrU8+h2gcphUMwPzxI/Gtxkr87qxZwPbFxhMn' +
+            '6dq5DC9vnIO7T56GrXNGYGVFMWaMy0GtZTqrdluMxJpipF4xWYGDNIFnvtQzdY3GCK+LBhFtQWCYPTYHdaONiVhyfAEumDsSPz69' +
+            'Gu+3LWIQ8PgvXIFfnzMXzQ3HYfSgQTjWhqY9+xJdjAbV9EpIf0rxdFeMjoTT1KX9l0rT2Dq5+SYfYJhv9wfEPkDgKdpEEC8u8NJs' +
+            'LPHpzG+vUDzdqXc+hpYNwslTx+H21dX45+aFwEVENArTVuGTrY347TkN+MHK43FObTnmjjcee/1oUs25WDgxzzBSS7BitLHxiomW' +
+            'qSL9muFxfecnkAkJAJDrzQODQExMHjuQdaP6syZaPqkQly8cjV+fU49DO5YCl5h5fb5jGR48uQGnVI7n/EJ39hOS9PEl1JhURLM6' +
+            'Wsfh5lfeb0y42TAiGt47+04DmC1hoRNoAJCmerQ2sOeoTlzP1iH7ToO9ZXklPmxrBHZbG3rhCrzRtACPnFqFi+aPxknTBrDdJYLO' +
+            'HGNUsjDG2XORepZMa7NFbQtzlFR7MIQMDbSEum7aVnVVHa8JTB0C5dxxefx/xphsVI/qx1rqpKkD8L0l4/Hs+jn4uHUhsMskoJ4/' +
+            'dy6KCkvRgzVBO0xLYarXDF/FeCOgoU+hNUBp9KCLOIEuD2AAYGyE3URQMtg1EKPWhy7iD4Rg8CUfnXrlYvLQIcDOJcDWhfhix1L8' +
+            '+MxafKN2EEv59BFZqB6ZxUz3NjvP/vbSrJnfbtH32OIBYRhMXr++7pnszQgVdhaljmW+Bo6EkgQAqk9miUzDpGF9UTcuB+c1DMYv' +
+            'T68CtjcCWwn4y1E1YhiHtMJQQ09hlj5OMwfetmsaJ+uG7ZEGpw2kbqOICwVpS1iQCKIdvl4DmCxgWhRgiwBBAyMaHJkJAkDF0CE4' +
+            'TNK/rRG4YAn+vmkO9p40BWdVD+LkTM3ILMxmR8xLn5Z6R3Qn9YaZzgdQjGFnL+VeLdHxdXIEKRoINIWW+gg0cn3WmGzUju6P2jHZ' +
+            'aDy+AJvqB+Pur03F37bMB7YuBi5YBmxbjC8JALtWYNpwCwBhXCJbmM5EV1IAkHQQ/T3Mg6x8t2dQ1L88X0D5n4wi92SQdgLN1q9k' +
+            'Z9QgJT+MLZNz4eDDezr3zsWUoUPw5bYl+HT7YrzZOp9BQBJBzt6z583ClYvHYenxBS5+F4IHDNNMCzx/oy3kmvH2vZPomeeBxfXl' +
+            '/HgfDlK7HBmoMHG2BQdJOt1PTK+xuYJlkwuxfc4IPHDKNLy2aS6wYxlw4Uqe38fbGvGX7Yvwi7Y5+IAc3J3LGQAUJsb08lFB7MCl' +
+            'a+CA1inHrlge5BYYAOi9nSYTGGsAy3xZChZmuoaj7Ufm2lf5CCa+rxg2lKXh7W2NuG1LLR5tnoG/bp2HLwgIu5YDu1dwGnbf16bi' +
+            '7NpyNIzNRvXIfux1C8Mc4ywAKK4XaTf/xZsXW679BTk29xOw6Bo7h0riSY1zGZtjGM/MpwSRsfEk7SsqirF7/kg8ckol3qRQkMZP' +
+            '5YKl+GBbI/7cNg8/b5mBu5vrcFNTHW7fOgPvk+bbuRyVIzwAvGNtHbtA2iNJT2F8UFcApDQER26Wb+wDJNYC5PHw0qE2DPRJIKoQ' +
+            '5AGEuTygJNpcx475fvAOANuX4r1tjdjTVIubNlfh1uYa3NvSgGda5+CdtoVMQJaeXcvw23MbcNnC0Vg6qRBV5FxZ/0CYpTWCB4AB' +
+            'gWG4ie0dAAKnT0yGB5VcN3bftE3hJsX+9WOy8bVpA3D5ojF47MwavEspYkoGWaa/t3Uh/tQ2Dz9umYk7ttTi5s3VuG1LDW7bXI09' +
+            'W2pxZ2s93t+6KACAmE8HBEffiN6qXly8APoVSe8jmDBd2iAfwHn/CgTtRAE6DPQDksEEx4mBKftjwSA+AAHg3W2LDFGaanAnEWlL' +
+            'NW7aUo07m+vws5YZ+Pu2hThs1SXZzNe3zMOeEybjjOqBxtaO6mek1zppJtTzGkBL/bxxPrmjbbr3F5LSP2NMfwZc/dgcfH16Kb69' +
+            'dDz+96w6fNS6iMdDmgo7luKdrYvwh9a5+HHzDNy5hRhejdu3VOOOzVW4YzP9N4XAfkdzHYOEQEMA6EgAUHZbM5IlN5L42M/y51W9' +
+            'r4wOJBGUBgD1XIAAQByEeClYBm1MgB64mIDYfkUA2LYE725diD1bDPOZQJuIYFXYs6Uat2ypwi1NNbivuR6/b52N97cusFphBQ5t' +
+            'a8Qv1lazvZ03IQ/TR2axLV6g4vyk96/i+xSvns+Nz+U8A0k6hXBrq8pw7bIJePrseny2bTFw8WrD9AuW4M1ti/Bc21w80jqTAXtr' +
+            'cy1ub6pmANy1pRp3N9VwuXNzlSk0Rw2AHREAnFB5SZWNNzEDNUjCkuIoyn0OPD4TKCZeinECo+VgD4AwDJTBauQFSA1A4Ot2JgAM' +
+            'GwJsJQAswp1ElE1VuFPK5mpHtL0sSVW4eYsh4BOts/BPAgLZULa1y/CXDbNxzfKJOGlqCerH9Gep5YSP2H8LBnOsQGGBQJJOmoQc' +
+            'znkTcnFuXTluWnUcnj9vJg4T03cZ9f7ljqX41/ZF+E3bXDzQ3MDSfOsWkupq7G0yDCfGS7mb/1dhL82DAVDtAcAmbgmmDR9qTEA7' +
+            'al2EK8lIBQBJG9t6Tu3HAFDAMk6gMN/wmP7bHUF+W3joB6Qngto7l1ZEA0y1PgCZgDtY+g2R7hJp2TTdAYD+syrdUs0Ev7WpBg81' +
+            'N+CFtrn4mAhJmbbdy/Fh6wI89PVp2FBfjpljs3lBiEwCaQPWDAoIFGLS+n+NDdc2zxiCvSdMxivnzwRopY8Wm3Yv500j/2ybj1+3' +
+            'zcEDrQ2s2m8hRtpx7d1cbcbtGE+/q3B3UzXuIiBvmu4BwHOowZ3NtXivbQH3M23YEM6Ixsxy9AoY6Rkb19cmRBaV0uoID3LyvA9A' +
+            '/HUACFPBEgHYTGBgAmSASbuVpoK8ijMAmDJkMBOAnEAiCjGapWXTdNyxcTruoP8WBAwG+U0EJ63QVMO+wt1NdXiqdRbeJIJuI7u8' +
+            'DNixBL+zTiPl50myZ5OaH5/DGqJ2TH8s53BtOO77+jS8tnmuceLI4dyxlEPTv7XNx/+2zsI9TfUGdJbp1LeM9c7NNCYzNsd0AsDm' +
+            '6bjb/pex89y4jRrWAO/TeEUD9DYPvaTRTRjJ9A7sejuqXplcR/uIB6RVDABCAXcawK0G2lefCBB8FOAZrtVK+0j1AxINwADYRhqg' +
+            'kR3AvVZVGoKJ2iTpMeWOTZW4kwsdExOsbSU/gc1EDR5tbsArrfPwBYdYRm3/a/M83LhiIk6rKsWJlQNw6cLReOTUSrxF4RrlHawT' +
+            '99EFi/Hy1gV4vHU2DjTVMcNv2VSF2wLwGSYKk2U8GgDEeFL9DACuZ+YhpsBoAAKA0VwEgM4CAMe8kImOrhoAaU6e9rciPuh6xD9+' +
+            'lDwIAQ0Q2lkNNDFiIgpIcUTEFkkdOhcsRfYvNAAYSgAwGmBvc61Vp4bAXKw52LupkgsRm7SDqFKpT+dZGgkImw0YDjbX4dm2OXif' +
+            'HC2y4buX46PWhXiXtncRMCzTyRF7oW0eftZqYvSbOQqpYXtu+vESLqrcSTgxlbTUhmm4Y2MlM3nfliouNG7RAGYeFshbjBlzPgA5' +
+            'gZQICjSAjt893VzOP2Z6orQvfI4HdjXQmPXw/Q4GAKVmS5g8TCjZorTFIOlIawRXVId6jcBEAYPZCSQmkHPkGGoZL5IjADC/LSEV' +
+            'QwxzKo0GsWp5z5bpuIUdszr8omUm/rV9ocm9b1+Ct7cuxO9b5+InrbNwd3MtA4bs+h7btpFcAwDRPiK93A8d23HdRWXjNDc+upcA' +
+            'cPcWYrbRFHTOtGMc3NspHGyqNeDcscxqAEkEKYfPSXrEYK0l2gGE40l03l2XxaAoAmANEL4fQD0CrgCQVhIM135CFOIwACgKuMA4' +
+            'gQQAZp6NAjyRLaOJ0MockOR5qSSfwQKEi/3N0kYaoQq3NdXgHet03dtUjxs3EyPEwax2EYgw0TDfgIuluUmZIwGkBQCNUca2b0s1' +
+            '9lkzIM4gFwIj91XDOY89TTUGADsNAHwmUGiomBoxmR6i9TuHFBACfoTaIwaCAID3A7TnA4RvCTPPkwdOoGo49gkS28K4eF8hAACF' +
+            'gWzPrdcfFM90MQOO8Zb5BgR03kgiSx+dI0ZSTN5EYVoN3tm6EF+2LcJ9TXV8ns2G8zUU0zdasIlmEdBtViC0gGRNJVJugUD9UzFm' +
+            'wvgDYtZonpTzuEMAsIvWAmwYGAmKY6Q2BRYMQZinHiPT93yVyXAAEPOusr1RFKAAYNHCDdidpZrpAfNdfCp710LtEPgAYgKIaFZi' +
+            'jNNFTDRENozWADC/jWr2jCImsRSTxFq/gLQA2V3WAFsX4YHmeuyxUq7jdQaAmJhAA1nHU3wAsemiHZTNJ7/AOYF0jo9t2zxHSgUb' +
+            'J5ATQbuitQAlNPRf+04aAAEo2i3t1yMe0O5ulnzLX+8DBIkgAYBEA4N5gcIxXEk2N6w7Uf+D3xoAWxfj3baFnAFk2+/spVfvRDwO' +
+            'CTcq6bdMp3BRNIUBAYHC3mfBtIfqbanCO60EgEbc31TP6p+Zz8kbSeBYKVbg4L5tv+aczVPYY+ftWwCw+qeIZrP4Ar6uRC57m+sM' +
+            'AMgJVCYgluBQE6hrsh/QHrv4PwBLOvO1EBoAiJPvi8kE0mLQIBMF6BCB/rO6UQAIB+gHmezUmwmasEkFL+ZFHwGAl0IjyaSODfOV' +
+            '2heppGsbp2HP+qnWE59mzm829wgAKIFEZuBdAkDbItzfVIc7RFJd2Caq3QLJaRZbHCgFDAQUnw8Ibb6YFw9k/s2+QA1nPU0iiAAQ' +
+            'aoDU3T3qODC1QlttDmzxi0Dp0u+eDnJvDvGCzgCgd8bHYaABQLwW0B4IpMSDNwM1q4EGALQWYBZKlNRL6MdMNoUZY1W9Y8ymSgbA' +
+            'ng2W+awVfFjGNr3JJHDeoT0HbcYEkGkwjPcq3cX1zgewfUo7Ajx77BjuTIn3WxgACszGnFkzYEEgYWAiFRwDIGKelOC8vebOpTDf' +
+            '+RfWTIcbQrwTaDWAfzJIVwoAoNb49UB8p3oQ/h1+VAgAU4cP4/0A721vtE6gYjIT3zCVEkACAGGIUdfqnPrNziCbAvEDyO4aAJAT' +
+            '+GBzPTuBpK6lGCBMx14CjvMnLBgFcLZfZ2KswyfjMXl/CR+NX+EjCgsA0nRkIlosAC4wiSDnBArdtNQrmupFN0dXy1zN7FgLB+et' +
+            'eTFhoI/wGAS0JcwngggAIUISGkBAICiMO7RI9F6rqc8AGDHcAmCxUYuiAdjDDqWdAcDMsZ63aAnLKKkfAMSqceMEkg8wH19utQBo' +
+            'rsH+5mouB1rMb27H+hGmDasVrA8QqHq2+QIA36ePDPyagNcMXgNQ4utdTgXbRFDgAwgDRWLNOZbc6PV7SQZ/RVH7AzQAJAkkWV/3' +
+            'hpC0tYB2AaBMgR6cs0NRMsPvCFpiFoMIALEnngCAT7gYX0DUs/qtzIQ4hC4KIBOwdREeamnAXc012NdsJJSB0GKcQAMuG+OLH2KZ' +
+            '7xgcMNaYBQEMZwclD6FMRQiAWqUByARYAEQhoBMqnWpXzPdSb2jstIeic0IgbR26V8LA0MmPHg2TRJAAIZEKjhiuJ0BPAQni4nDG' +
+            'h4HkA9BqoAmRHKGYWEJocb5iH8AT2vgOSt0qDSKriCYMbMSDLaIBalzIRmAQ9S2xvFH11qYzMDW4rObhjJ/JPpq4X0DgAaDnIvsB' +
+            'yAnkPMAFS/mpocSeQCs4jsaKeY7+tviciwoRhd4pvoAUer9w+OSXAUDq4+FS4kfD+LcboA5P9GTMf60t3GLQ1kbrBOrcPoV95rdh' +
+            'hlX5Tr2alCybBJE20RoOEN4cmCjAZALJBDzQTIkgs1FDSzNLKku+iQ4CMJIW2FSJfU2R+ZFIwhbnU7hVQTsPBYAgEcRrARYAWkgU' +
+            'AEIaU9FaINS+AfMTeYRQS/B+AMVb3hquHw+PdwWbV4kRAOxz5qpzbljsfODN+gHwPfapYr8WQHmABT4V7Lxtq3pdYkUkUQAR2XyV' +
+            'nBFAiOMmGuBtawIepDhcmObAFap447H7PsXkmCyjmAiTcGKmW3NCoNpHmkWBwDuHJg9AzCcQvEdhqYoCHL2Cdw/7356WSgs45mqa' +
+            'p9E/eS9rALchRCeC4v0AakmYTECQB1DFM9r8T4tDtQYwO4IWc3zu1wK8evVSJvl5cfjE2fKq30ianDNhl6SWOctIGsDmAR6gPADv' +
+            'IyCme0k3iSGrCVhiU7QA9UFAkLHocNLeI0WSQgYIZs2BAMBrAVusCaBEEG0I0SYgFqQUhsaRgHk3UQgMnQoWoMg5A4D40TADhEQq' +
+            'mO2C/SwK+QTUWHtp4AQiHQBosFZb2ERQmAkU2y1RgCG0MFrOa4n3jPcqlj1zpwkMI3n5tanGeN02FWy2b4nN9+lg8fyFmXRd1guo' +
+            'r31baMFHfARTh+9z5seOw5qYfc21xtRQaTZ7HskH2NtSZ/Y32k2hnTLlySAtLCEdtToPtGyg5oXWnvaG5uaaA4CNAvxeD18iJ9B7' +
+            'iAYAg7kxrf7NgNIA4NORMVAoCqAHQ8ym0AVMGJEmceC0MyWSLRk+w1wdd4sk+uVcCcXYwVQAeLClgX0Ac28Y3kk7ZOsN8y1jrSr3' +
+            '0m5Bo+y/MSEWFGwWCAS1DIL9rXW4d1s9Htw5Aw/umon7dswALl7KbzGpHjkMx/bMSVX3oaR7ujo6t6NlY2Z7QPh2zXuCPOMTW8Lk' +
+            'RZFePaTkAZwjmGIOHDp9skJAQjtgzHMBZlcwb8AQ1SteuFa/TkN4iXSOmorRSToNaAxA2KzYFUGJAh5qrufQkJko0m61hmgc7xsY' +
+            'jWOYrqXcA4DVfbONJETtN9fgYFsdHt5Rj/u309pDLa44Yxq2rJyEk+eMx+LasVhbfzzOrhqH0oIifkzcC5OXWK1t05isj/V9Qn+3' +
+            'dBwBherTSyPjCCAAAGsAcQBlT2DwYujQ43cMVtogBIkvnAewawHvbV3kdwA5KfLqXc6LJApjHSg2SV7fe/UCEPptduKqMLCpzqSC' +
+            'm7TtthJOTh39diBUJkFAohgvWsYUI/UPbK/Hj3bNwI0bqnH+4omoPW44BpSUonvvPGQc2xsZHXoi44juyMjoYsrR3XF0p0x07NIb' +
+            '3Xr2N6/eDRibotJt0SDwxTA8ZHwYAVCb4aZQ+6IocQJpLYA+rxpUSAAgVPkB89U1jWYpnSQRxCbA7AcQx0sYaDxvkXqVkOGlXrtt' +
+            'nM9Zx5Al2juIxslTi0FiAlQqWEs8A8ItDnlgmDY9EL16N9Juftfg3q11eGjHDHz7zErMmzYKeQUlyOjYFxkZXXFkpz7ILRqESRXV' +
+            'WL58Nc466xy0NLdia9tWbNrUhK+dfCoaZszFsJHjkdk3Dx2O6YFjOvdCJr1wSjHV0TBB/9gP0AtCVjgjAMQ+gIsC9GKQbBRgHyDV' +
+            'BPjG2xtcAiTBYlAIAJEsr/JNEQAY1a40ghS1c8eob5sjEBPQXMsbQkjjUCZwrw3bPFiM9DOTReMozeA1ETG/llU8j7Wphu37I7tn' +
+            '4rrzqjFrygj06JOPjCMz0aFjL4waNwnnn78R9+7fi7//+Q/44sO3gC8/AvApgM8BHLL/PwE+ew/vv/kqfvO/j+HKK76JmbMX8nsU' +
+            'jji6O3r2zvWM1JpXOYFeAwsAZOeQOS+8EB75DSEWALb4B0PoySDnAxgABJlArfIjLeAYHnTq7zOLQaIBzIYQsZ9exRot4DN+3g9g' +
+            'FW9BwMDgGN04byZZYyMIqtNs9uHzs4bbGvEQZQJVDoAdR6stRNoNwAzjjWnwap+dT+vZ37etDge31uO0eRP47WkZR/fGkR0zUVc/' +
+            'E3fduQcfvfsGgMO2fGn/fwR88g4OffgWDn3wJvDJ2+YcvrDlMwOMwx/j2aefwnnnb0BWTjFrBflmgmgE+i/htuOJ0gA6QuDvMSgz' +
+            'ksgD2GLWAvjxcPPRKFH/9D8EgAIBN5pU/wkg2OtkAvjBEEoF055AJqhnvKzQEfOFkZJ0cT6CMMzabqe6I6b6xRcBAEUBwlQTOTj7' +
+            'rtS9f+BDkj1G6lkzNNfgoR0NuGVjNSrGDsNR3XKQ0aErJh4/FQcO7AcOfWCl+zD/fumPz+H2W27Cli3NWL5iNWob5mDKtFo2CTV1' +
+            's7Bi5Rq+duuN1+PFPzwDHPrQaoaP+f8Lzz+LE048mc1C1579oxyL+q0Y7hmfTMcHAFD7PVjQzWKQeT+AxP8+ChhsbJFitJd6OhYw' +
+            '+I4CIFjAsA/AD4eaxSAGQKpqV/vwiFEiqS5PX+U9cHuvgEVUOieZZPVtm/EBOBMou3mspjHOpHmax5mCFADQGB7ZNQPfPXs6BhSX' +
+            'IqNjFrr06I/m5lZ8/O7rTtrfffOfuO6a72Hm7Pnon1eKozv1QodjuuPozr3QuXsWMjp0RkaHLujYtQ+fIwk/8tie6Jc7ALX1s/H/' +
+            'vv0tvPnaK1YrEBA+w9477+D3/B7dsWeK3U/LCUg0oDeIGP65p4PVUrACgF0LoJNBurA8CYB4EJG0G5vkUUrHxgn0TwdLJtBItVn9' +
+            '45jfpl19bl/stsoSWudNGC923YCGNoYaP8CvBkoYKFpDPHlJBnk/RMyRJHZI7T+8owHfOWs68goGIOPoTM6o3Xtwv2X8F/jsgzdx' +
+            '9VVXYfDwccqZMzZcaNe1Rz8sXboSjUtWsuevtWavvnk4tktvvresfCQuufgSfPgOAYv8hkN4+cU/YHJFNYPJ0DPN7Ma5g5BHrAEi' +
+            'H8DwN3g62G4IcSGC+VgENSLr0mGMGqqY0ClRzoqLApQGEABwbK/3/xEAptl1eiv1VloDRouHrtLGksShkE8WgzgMjHcEWQnfb7N2' +
+            'kmDSiR8+31SD+7c34Jpzp6OgsBQZx/TCwMEj8exvn7RS+jl+9cRjmDSlChlHdkGX7llOEDQDiMEU6r356l/wwrNPoXO3LH7zaqwt' +
+            'iV5de/ZjTTF2wmQ89tNHrVn5BO+/8wbmzF2IjKO6KhrHwphWvClI7gk0Qp50AtWjQ+Gzgb5IB0mN4Ds295ni9wMYDcCZOXH8dAho' +
+            'tcA++9SNMNcXvUHTXo9SyAwuygRSFLC10WwJa6rCfhcxmP+yihdIvjMr1binjTRHLYYNGsjxPGnGPz73tJX8Q7jmmu+jR68cHNM5' +
+            'k+cYP9YttKEwj5y6f7z8PH7/9K/QLTObQSFaICj2HGkE0hpXXnGF1QQf4+MP3sLMWfNw5DE9fPvBQpwce8GUJXo6L5lAWQUUM68S' +
+            'QeFHozgPED0d7BCuvM/2QOAnZTQArwWwBmhUqVkJtxQDrXPGj10pkLiHSCQR5IBjs3fkNNrsHDl9si3c+QASCbj0sVrccUkicz8V' +
+            'cvrmVIxCRqd+LLG/euwnViI/xUUXXsQquXuvbEdgx4yokPST5nzn9b/jlRd+z06dAUCSho6+9LGL3jnIOLIrmpuagS8/5nDy3bde' +
+            'w7gJU3Bs516+jyD+F9MS+gZ0nkzXgLLknkAPALcfwL9Q2JkA5wOIIxgxWyNfqSg5dotBNgq4q7nWaQDNZEkMCZOMk+ZVvF899FqD' +
+            'VgGdX2CZzwCg1cBtxgRQckjUvAeWPXbAsImhpho8eEEdWlYcj06Z+TiqUy9cf+33rNo/jMsuuQQZR3VjUDhHK/iecET8/oUMlI0b' +
+            't+CMtWexQyjMdwCI6CXHBBRyHCmBZMLFT/Hsb37FoOqemR1qZBsGhhGDKbwpNACANwH+ySB6NlDZCL8fQAYVOoIebRrJSWdRTIBZ' +
+            'DLIAaKnFvha7TcsyQ4qXVJ8XkJ25pmiToKMA68wRAJrVYlBzAy8+eWaLAyl9Gabvs0u597TS62tqUTagFBkdumHNCSfbEO0z7N1z' +
+            'O3v3lLHTYZYvaedMTJ5xbE906NRLaQzDaGYgMVxLsSSA+hXYTGF33HDdtdYcfIFvXXklg5Cux6ZHj0X4QQCQbwmGfkD0aJh/Xbx/' +
+            'ipQaaz8VnFRfMUjoXv2SKMoEEoMYAAoEYpOFQWnM1kwX9c2JIKXKOXVsU8G8I6jJh4Ei+d4RNEwnh/BACzmF1fjRzgacNncCjujc' +
+            'j6Xm7y8+x5L/8gvP8fd3SIUHDrCWQk0f+m8lskuvXBQXliKvoJTflZxGP+03yX+hZbfM/gy63//2KXYKD3/6HiqrG3BMp0y/cTSx' +
+            'a9u2Z/syYaDnrzcB7qNR+g0h1hSUhBtC4gkGqksDQKGbCm8JU2EgAUASQbJbVySSGON9AwsCsvv83+7OcWGcTRip+8UMmDyAOIEe' +
+            'WKIxiPkU61Oh3wSAe9rqcOvGGhQVDUDGkd2xa+dOY/e/+ABLlq5kB8xLvgKBHAdawfwm8FeOGIrXti3D8+fNRXmJeVWsSLm/39wT' +
+            'CJmi8ZEde2DGzHk4/Nl7rAUevv8gLyoFDmUKEKVN/3SwKaINgiiAHUBtBgQAKXGmRqiefAgCc50AQK+Cp12xBgDGB+CEi026cHE7' +
+            'aizz5b+AwHrxHAUoqfbMN+EbZe4EAA+1zOCw0LRrnE3SGnIPMZ81QXMNJ3zOWTgBHTplMR3e+MefQX/3HbibVb9jTpxsccfqc7j2' +
+            'P32x7LL5U8yr7y9fjRMrxuLIHjmOwY52CZNi2hYNQbQ84uhuuGvP7cYkffYeJ5Ao7xDzJjZPdG8MAKcBEgBQjw3FTwcHjbrzoRMi' +
+            '9cVsZPbNR0aX/hg1iKIA857Au1rqDAC05FsmiB8gqlqYLuGb+AcmBaxsufgB1EaLzQRSIqjVbAjh5A61rfYdCgBEc9y3rQETRwzm' +
+            'Fb3zvnE+Sz+pWyI0hWaa2TEIAgAoWtC3EC6ZO9l8pezilVgzaQx/XSTB/IQjScwPhYrGMK2yDoc++g+bpZtvvMGHhSk80nySN4U6' +
+            '5lttHziB+slRlwlUjSfVUxj38qAt88k20SdUKGW8+vhRuPeUGbwp8pMdjTjQVod95AhayZe9dMIIz1Bj431E4JM12gE0QPIAcKng' +
+            'rY14uHUGmxxuM9Igvv9qHNxah++sq+TNGp179MMvf/5jlv5f/ORH6NQ9i+coDHeM15KmGK81wZGZebh4DgFgGb8af81kAwC5J9Ak' +
+            'loa+7Uig+hsQPPLAQTYDb/7jZU7lUpRhrscAsPcHi0EaAFoD2KeDZTuYmIDEB4k0CBIA8IMlANCHGK9aUAFcuoI/uvRlWyN+fd4c' +
+            'XHd+NX5y0WxOttByq95ZK0XMAzt6WvKdBqBzpM5Fpdt1gtZa3N1SF2gACjsFZEbD1GB/Sy07f7LcS87fWQsmIOOY3phw3FR89v6/' +
+            'mcjnnnsep2k10/VvkU5HcPkyupViA4BJ5hX5Fy43AOhpl3ujdXwuChBa/RtfoIgjgrVr19mw8BMsX7EGR3Xs2a4GECASAAzzQ0dQ' +
+            '+QDhdwM9AELHRDPfnVcTYADQ+wSy8nFMr1w8dHI9v8nr8GXLcdd5c9Evrwxd+hTihIYxuHVTLX6yeybu2+aBYFQy+QNGPZNfIEAI' +
+            'QGCzf04LsGNnAdAqAFhoVwM9wIzU1zoA8P+WWjy8swH1xw9DRkY3nHvON5j5H7/zGkaNPd6tyDlJjaTTg8BIv5foInTIzLMmgACw' +
+            'DGsmjWYAxBo1ZJiip+qDjrv17IeRoyfiw7deZTPwP9/6Fu8h0E6lGVd4v08FxwAYkfQB6ILsCk4DgI/3lf3X6sq+UIIAcPCEGvNI' +
+            '2PdOwn/uOQePXrIMS+smIqNLDrr3zjdA2FyHn1w4k3PvB1rrnENoJJR8A68ZmMlit5WfYABTjf2ttdjfVod3+enghZwHkEygOJwk' +
+            '8QZwFnSttawlhg4sQ8ZRPXDrTTew+n/mySfQs08ez8dLZgrTXEmaBgLApXOnGA2we2kAAGGQ3BvS2P6PvnpOgkUq/6nHf2pN1CO8' +
+            'OpmWDzDMNzwJ3xEkAh6sBdiPR6tQMAgD2xlo0JkasAPASXX81q4nt83D41cvw/t3nobDB9fhp5cux6KaicjomotuvfOxZsZY1giP' +
+            'XjiLt1s5NS2+gnUa6bk+cdz4mB74JCbSeSqttdhHGqBlPtC6kF8wyVvCCDhOE3jfgyIH2uRx7bnTkdW/AF0zc/D0r37BxL315pt4' +
+            'yVbmmAAAm8fQ6TPnrTCIE0g+wG56uWUSAOE9hoEuPyBM1wDoV4Ajj+2Bm2+4nsf49z8/j/zick4dS6Y2yZsUJ9ACwDwaxlvCxAR4' +
+            'PyDcEpamsvxEfdxvtQADIA8HT6pn5+fxltm4ZsN0lvanrl6GT/avBe4/B49ftRqN1ROQ0SkbnXvlYVnNaNy8oRqP7p6BB7fXK2fR' +
+            'mgTLdGK22H0GgJxnANS6F0SQBiDHkJ4KFqdPcgCyGkg7eS89pQKduvdHQUk5XnvlT0zc3Tt3sf2nOfbsk8tE7tk7x+zUiZ+FtEyP' +
+            'bTqbAAHArqVYPWk0jrY+QLo58VpUJL5Hr2xO/dLiE50jP2D3rt1spj566x8YNeY4XjwKhNSOiQU4zQm0RT0bGG4KTewJVFIegkCA' +
+            'YFKcIv1UjwBwLwNgJQOA3p3/3bMrsbJqIK47rxYvXbcGh+5ZyxrhJ5csw+LaCTiiay7n4JfWjMIN59fgx7tm4IFtdZyoYZvN0i6O' +
+            'Y5gR5GiAMnriA7QtwsMtDXzOaBOtVcgxpHwE7extwLY1k3FEx97Kvh7Cud9Yj6M6ZjLxKStaPnQML55QLp7nHX84Oo4Osq0PMNs6' +
+            'gRctx6rJY5DRJdvTztX3oHHSnlXAgCN+DBw8mj/j26N3Lm9DO+9c8lM+x+GP/oMpU2vQqWufZL7Gtm0A4L8XoPmcshhk7IQ8SuxM' +
+            'QKoGMMyXSdP1EAC5uJdMwMUr8UTLbNzcXIfrzqtCzagcjC4vQOX4ofj2uun48w9WA/etA+4/Cz+7dBkWVxsgHNMjF4urRuGH51VZ' +
+            'jdDAkkxg8OrchnSSV6BrbfVmT+DWRfhR6wy273IfA6mFwlDyNWhNopZ3925aNgkZHftgwnEV+Ow92tt3CCeffCoyjjgKK1asxkcf' +
+            'vINP330dn336Pnbu3M1ZOMc8pQk0GIg+BIArF0xhB5BePv3ihvmoHz0cGT1y+ZO4mqbB734FOLpTT1x26aX49NP38cnb/8QH7/8H' +
+            '8xcs4TGtW3eOiQQ+eRvTqxt4m7n5uluYCpZ25dEwY+bL/XeDEgCQrULKCUwyPQSAGbioMe8HOB/gklV4fOsc3NRCAKjG7AkFGDYg' +
+            'F0d2y+OPR86eOhI/3FCHF65Zgc/2nwHcexZ+fulSLLPO4lHdc7CgkoBQjR/vamDTILl7Vunqt4sC7EuiHiIAtNTgYGsNp3qF+bS7' +
+            'l81LC+3ynYUtKyYj49g+mDS5Ep+//yZL10knfR1HdDgGc+cvxtO/+TWe+d/H8Oxzz+CMtet4a5eT3Jj5SgUf3SsPp00bazKB9HWU' +
+            'nctweNdybJszhb8dRFlS86UQFfZZAHTs2hvr12/As88+jWefehy/fuoJVNfOxBEdjsa5NlH15YdvonJ6PY9Hf9tRgyCpAbyjr3YE' +
+            'JT8Y4UxAoFoEEIrh7tivjYsP8MipM1j1/WXrAuxvnYlrNlSjbmwexgzKR7c+xeiZVYSOPfN41WtOxXDsaZmF576zAh/ddTqbBtII' +
+            'S2onokO3PBzdzQCBdulQ2vahCxqMOrcqndV6S63JBIoPQABoNXl+ijCoMPObzbkHd8zALy6bi+ZVFZwDGH9cBT5lDfAZzlx7FqeA' +
+            'yfZ26d7X+QFdevTjz8RqKfNq3BQBBNGG1gO+UTMRn+ygz+MsM28nv2QlHjxtBgaWlOHInv5hUcN8rw269sji0I8yqvS7e2Z/dDi2' +
+            'J7a2tDAAPn/v35y36Ny9b8qCkG1TLQYRTx2f+athwZYwQYcpejlYBhdMOlBbyvbZewgAO2ZPNomg3cvw2bZG/KZ1HlbTp1+Py8P0' +
+            '0SXIyy9Gtz6F6N6nAB0zC/hz8JefVoH7LpiFZ/5nuXEW71uHxy4jIExARtc8HNktB/OmjsS155JpmIkHCQiWuRQB7G+rN7uCKRPY' +
+            'NpMBwSEk1Wmjx7dm4NGLZuHgtnpceUYl5leOYuJ16ZmD8iGj8PZrf2En8IILdrLDJfZYzJtIvGe6AoC6ZkBgaERrArQn4tlvzDWf' +
+            'm+WPUazA621LsPi4MfzNYdKGnrZWI1hH0H3Am9o6pjuu+d53TTbw1ZdRNngkA8PdG72hRQAgn4xnIFgh5zAweEWM8hST7wpWUi+h' +
+            'iurIdWgLfyo2qwCrp4zBM+fOMZ9WvWgF3m5bhJtPnIS1DWWYP7kAxw8rRnYuAaEI3XrnMQDoBcs3barB/q2z8IfvrsDnB84E7jsb' +
+            'P7lkCQOBfISjuudi3rSR+N45pBFmsi3f19bAhRad6FO0D/LXPYy00y6fh3fOwE0ba3F24/EYStu9OvbHUT3yMX7kUPTJyuUdvX9+' +
+            '/hkGAIVaFHLJHGVefByDQGuAGAQ5xfwR7mN70fawIvxgRbUBAX0NhV5mfdEKXL5oGrplFaKrfY9wXESrEhDINDz60P28G/n3Tz/J' +
+            'dJZdRjEP5LckgoJQvzTKBIpd0AAQFDoAWCkXVeOAEISBpkjnlBLu2a8Aa6ePx0vr55nv6166Cv9smo9rVk3E6fUlmD+pEMPLCtA3' +
+            'hzRAJe5srsdtm2txy+ZaXHn6FNy6uR4vXbcah/afgS/vWYtHL15q8ghdyJfIwdypI/D9c6vx44tm4YGdsywAluCnF8zCj3bPZMm/' +
+            '8OQKNEwajm69C5BxLHn2ZTirsQI/vagRb952GoaVl6PDsZl4+L57GAC/ffIJVr28idNKn8zJ0UMz3GlH/9toAbM2QL+7Z5n1gdMq' +
+            'x+P9bfShiuXmAxiXr8bPzpjJ+wZ60POCKU43jYEjkpLBeP1vLzIA7r5zj1mptLSPQSP8M2Ggf0+gmAHvAyReETMYRaQBVCIokAQB' +
+            'gH0+QCYeXFOTII83o0cOE2FDw/F4tWmh+XzsxavwyqY5uHrZOKyZXoT68fm46vQKfrsmAeDu1hk4pWEwpgzNxpkLxrNGeOUHq3Do' +
+            'njPx5cF1ePSiJVgwfRznEeiBjfnTR+P736gBLiQVuxx3rK/DqfMnoqy0DBkds9GxVwFmTxuH6zfOwas3ngwcPBMf7j0dL1+7ClUT' +
+            'hvMDnBdfeDGnWT9593WMGTfZbuPyWc+vkvw0EPhijkliySSMHVSOX54123xnmD6U9a2T0DJrCo7obpM6CnTCUIo+5i9oBA7TwySH' +
+            'sHHDJperMHWtgDo+WADobeEq45vQAIyQyAl0mShpWEt8MLnYkzV1HBr7FTC6CQj5+cXYMXcK/tNGXwxfDVy0Cs9vmIO22UPwzTMm' +
+            '4zb6KNOmGuxrm4Ez5wzDhIF90atvLkpKSnHu4uPw4K45eOUHq3HowBk4dOBMPHThUsyZNo59hKO6ZeNrU8fg9Mrx6JyZj4zOeRg+' +
+            'ZDBa11ThyatW4rP9Z+LQgbX4+/Un4qkrF+P+XXPxP2dXoWZCOToc0wuz5y4EPqeNF59h/fqNdvuVnWfs8bej+jXj5D7RnlLIJPTI' +
+            'KsDVjVNxePdyfLBtCWpG0fcE1HcFo3Yo7//97/w/Zj4tCx83uRKdu5EDGNZzALD/w4dDIx9AA8A8NOhTwf4lRYqp0kmMUHXd11Fg' +
+            'Ud5p974FyOiejbLiUly9eBo+IXtIQLhgMf7aOh8PtszEDzfVYu/WmVg3ZxiOG9QX2TkF6NqnCJ0yCzBsUCk2LpuIH+2eg7/+8AR8' +
+            'fs86fHFwHR7YuQgzJo/CMb0LkZk7AMtrx+KeCxrxzh2nsbT/57av44/fX4mfXjof15xXg3WLJmDq+GEMyDGDCtCzbx4D/qXnfsMq' +
+            '9je/+gXn2v1j3O0BoP3HshyNUkBAjh8BYfKwIRgzqBzd+ha4+7UmZZplZquNKofwy8d+whEJrwOo/lzfSmj1Z+N0tKc+H2+eDRQn' +
+            'gUr8zSCNKsdcNclgsv+10CQLeI/cET1yMHrQINy0qtp8vOmSlfhy+2K81DYfD2+fi5NmDsbkIX0wYmAxemQV85p9l1756Nq7AOOG' +
+            'D0LLquNx7/bZePHaNfh8/1p8fPda/ObqlXjx2pPwxYG1+Piu0/DC91fjN1cvwd1bZ6BlzRTMqhjJW786ZeZx5pEYM21EHnJz8lni' +
+            'L7nkUves36LGZbzk6lS6knpn+2PNoEJiz0SvJWN6dOmTz8wP7zUAEO+fdgg30TZx+5QxPXbegVYChR8p7UrRD4f6lP/Q5JNBkiky' +
+            'YaAAII35Yv/TmC++gD2O1KRWlVkkOf2LOFYm54j2z913ikkfk3dMqvHBdTU4vaYUi6fko2p0IYoLixgImf2K0JkZmIfmlcex3/Dg' +
+            'rrkMhDduOhH/+OEJePKqZTiwbRZ+cH4VTp07HsMHl5uQs2ee2ZvH/kkhevUvZgCMLMtDxx7Z/Oz++2/8lQn95OM/500itDFT5hcA' +
+            'INIGToIVYxwtFD01gzxwwnsECLQxNK9wIF575QU2Tf/48x+RnVfKK4OiWXWbjh/WHOmXRevnA50J4JdFRwiRVHCi0QTDk0UG7u/1' +
+            'TpQnlgaHqUfq8JhM+r7fCDxx9hzWBrh0NX9798ZVx+GU2lIsqShA5agi5OQWomufAnTpU4yW1VNwd2s9btxYjZs30t7AWty0vgrf' +
+            'P3c6rj+/CrduruGt3kd3Nytx5Ih171uIHn0LkZdXhONHDEDFiBwsnV6GwuIByDiiC7511VX2Me9PcP5557MEhvPUEu/PJQCvaCbH' +
+            'iby9pUGgVS0ASMXT42ff/Z9vu2cGN2zY7LaGM7giOnr6F7EGkW3hWsNT8T5AtBYg2oAR5JwJNTg1aD0JP3jtOIaRggeBvtcXGvDR' +
+            'PXPQtW8Bb6J8/vz5wKUrOaX8r5YF+O6KCVhVWYh5x+ejYuQAZPYrxuYVkzgFfMumWty62eztv+H8Klx/fjVuWF/NEcXIIeU4tmce' +
+            'uvct4rwDmZTasYWYP6kAKyuL0DxvBH61cRYumjcJGZ2zUFw6DP98+Xl+nv+Dd97gjJsxBRH4rZSFAqFok13EGUQq5jg5Z100DQlg' +
+            '9EzgosalwCF6r8BneObJx9Gjdx4/hCpC5kyRbsPxzW8I0R+MohKYADnpAZD+bGBysrZTpdp8fXVOESTQAnGxJoKklNbT+2QXYWP9' +
+            'RLzGoeMqNg1/Wj8Lly8bj9VVRagenYsLT5rEJuDmTfTR5lr+UMMN66v43T03bqjBD9bXYMSQcgwoLkbFiCLMPb4QS6cWYF19Ga5d' +
+            'NRHPfWOmicevWANcsgZjBg9BRkYnrF51gnurx5+e+y3yCgeZdQAFdjcnTQM1N2JUycBhKBk43JuRmGGOTua8MPaojj14hfKN18gc' +
+            'fYwvPn0fVTUzzWJUKh/UOJQPwRtCoi+GFZWkvCbOAMAkhFKfDAqYGts/dc4NJIwUgmLv89fNfdqRovOUQziiZy4KCwbgkgUVeJ++' +
+            'CPbNNewnPHl2HTY0lGPX1ydy6HjLJvqmIO3wqcdNG4n51bhxYw1+uL4WyyvLsGhKPk6qKUHbvOH40RlVeI/aIjNzxRp8vmMZ7vl6' +
+            'PVZVjEN+XgkngY7qlGnDLgLBp/jl4z9Hdn6Z2yUcjl2rXnNedvA8/eQvOXtHIZukk6WOs/WWodImaZuy8hF48U/0cIp5KqittY23' +
+            'h8t9CZoqsyNtsQmwbwkjoRYQ0LF6ONQDgEvi0TCajM2Fu0EKkzzztU3kAdh7g+spAIhBQFuiY+B0pxxC9xwMHzgI16+qxpcXLOZ1' +
+            'hi+3L8HzLfOwv7kBP9xM3/c1ALh5YzWu31CN6zbU4MamOrQsHoXvLR2Pl+hzsbQ+/83VnJF8YeMC7JxXgbGDB/P6xVE9c1j70Fhl' +
+            '8edBzg7S84Gf4re//hUGDxvLjODtYmqMMmaZE0k/pYJf/9tLePH3T/N6PmUWg3ucUBlTSTQmmz9m3CS8xMz/hH0R2gZOWT/ZjxDT' +
+            'h4qhv7Rr2iYQagBoQTeviIl8AKmQeFu4UueuA33eSq2c04SIB8rFaQ85p7SIVo9RG11656FDj1xUDB9iIgbyDy5eic+3LcbvWufh' +
+            'zqYG3NpSj2tJA2yqxYNNM/FS6zx8tmMZO5RkRj7athR3nVSHxcePRt+cYs7MdWnnm74EAJrPI5x/pxDsY7z+6itYvHQlv/aNM4V6' +
+            'jCIA9tk+Yvi///YiXv7js+iame3idkc7JSRdemQh4+huWLZiNf7z779b5h/mdxDR5lRamYzHp+mdJoAMAPfhSP9GeLMcHO8HULli' +
+            'XguI7H7AWMt4iVO92lZSLgxVKt0RSSVN3P2iIYL6FiRS126k6Ng7n6OGhRNG4SmKGDivvgQfbmvEM9sW4MnmOXiLdgbREiyp+YtX' +
+            '4rn1C9AyaxKGlQ3C0ZkUceSZjRkJ0+bnSf0SCOjtXXfuuc2/xuXwR7jhhhtQPmwMO2o6ZSztEfMphLv/4D247abr0cmaAGGOMIhe' +
+            'MEFtDBwyCj/8wXXmkXB+mdQhXP/DH3AYSm8XcW3LOAUEKlUt5w3PjEbRi0H+ZWDaBNg9gV49RBrAlRB9+rpnfgQEJ+kRgzVShdiu' +
+            'RO1wfYto15+5hzZZds8qwKmV4/DChvkmo7jTfGGcGP/u1sW4ZU0t5owfxbkDknZ5SDOYn8trqD5lPNnmIU2y/a2tW/HFpyZVTL7B' +
+            'O2+8iiuuuBLjJlbwdTINxGgyH6QByPEjk0I+Be0pIBVOpoDeFkJ1yc8YMXoivx7mP6+T1JunkT//5F1s3tzE7xSSCMJojJBenm7R' +
+            'mO21AABqLwBlFYPFIFH72gRQokYDQDcunWrGmUWM5CDDgaVoBJmcbjuqo4ESj4XesUcRQ7/cEjTPnoxfrm3AY2fOwqaGSSgfQJsu' +
+            'cnFsr3z0srbdjcep4Fiq0mN8sukkqZVVdXjiFz8LXvX26bv/Zl+BXvVGbwWjPXzkAFLUQAs2xOhju/Tht4QUlAxGxbRanHvu+Th4' +
+            '4G58+J/XrHkxoHr8sZ+isqqec/+81Kvm7mgoNHJjVFpVjZvmRjuCPF+9D2DzAEMjAAgI2nldvBpEOKgkMr+qrpuAnUx43ecN+FyK' +
+            '5vF9GumlsWb2I42Qw/sQuvbJ5wcxyXmUttIIlF6onnrYU48tu4gfyqSdOqeetha//x29OsYkaCRNS5s1X335eTz5+M/wwD37sPf2' +
+            'W7Hvzj144OA+PPX4z/DPv7yAw/QiSWY4gcgw//fPPo3TzljHIDGRhtawanxuDlpIQoFx47bLwRIBkHMvYHAmIH5ZtICgX06RfwY9' +
+            'AoE8vNhe4TqiDRLgsQNuhxExqOLrcV09Nncurhss1ijNpUEYAM2OTfkfhvDmury8gSKBVatPxIF9d+FtVuEmZJO3ivjfwmh97hO8' +
+            '9dpfsf/uu7ByzUncJz2LwJGC7dPPRdFKzUHorAVJ6glt8goJAF6zi4DzF0PoRZElpTEAzPMB9EZM9wx6UCLiakbYAbkin54N6rfP' +
+            'fN9eMqJI1gmfnPFja6/9OM+g6uh5RSt+ad61jIdsPCVs6IVRg4aMxqo1J/ELnu4/eAC/e+qX+MufnmWJJ41Au41ohfHeA/tw+eXf' +
+            'xIqVJ6Bs8Cgc07k3ju6YyaAyfYSa1o0xAIVdNErM0dJG0aSgSKQ+zgTaN4UyAIJNoWa1iDJIQdiSxoiAMLEU2ckwwZQaa4cJmuFp' +
+            'x3HxfYpWigEagiDIQ8RtydiVphBtkQYmoYPQhIBIjiIlcMi5IxVOjh8/mFk6lOlLzhg5gsdav4De8tGdH/hQ7anx+zHo+aTQTF3X' +
+            'dKAx0b5Eb9r1F+JdHkBrgGQk8JUS7zxnT/gEQASplripJWJkcK+buO1XaQR9TY4F9a4N1Ye0GTM07FeDU4/FjlEfR9f1OSI+aU9y' +
+            'HPmpoj4mKkiaVDV3KV/Rp+5HzrvrdtxCB+qLdjBr6TepfpUJ1ABIq8STifbF+QF4pJnremICHM/EwAFzv5Uti1fJHKN0PW9m/DVP' +
+            'KE2Y/5vDp9tKJ7av5+cmdXV/affHx368Ma387uPgvOs7pI8HTdS/AhM9LJJfODBI8DkzT1reAUC/IcQx32SLKI0Y+AFqYvEE9DkN' +
+            'GnNPJIXB769gktYSrqSHpAySdiRG95F6XfpJSH94nxDY3aOvRW3Hv9190k4aDSM6chtq/rpfUyfuw99L9XSCj/d6KE2fkgk0+8X0' +
+            'u4KCjKAelJtwyAxHCDu4BBH4dzLX7wivJifnKZ+eIEI7xd0X9Zeo535rhscaIzJTisCuTkLDqLqqH/pvpFu1E43FnDdtU11+EDUa' +
+            'd9CHNR/mXquBbRsmBey/FuZtv/lPu4uDxSBR+UYLmKwRq4nSodyQPHuWBEBIGCG4RqInti/x5GPpMxMz8XjwQYSUdrQUuGIfykic' +
+            'V2N2/do+vcMVM9Xe147adWPXYBEpVPdSRtDTKqZfKGQMAE1rRcv4nJuT3EsPkmTlo6B4kOGr1eyhGUi8IiZEijcHdnMIMzXUAn4y' +
+            '/rwQ0J+TAWu1mcLM1I0SycRNe0xNSm/Yrr7Pay3F8GhPXyDJ/81HSAAgOQ7HIM1A/TuFtjIOfa85ToJM05vyCP1zi23iJwz9OBPI' +
+            '5n2oekOIfTw8YL7KCtI1cibM61+S+fhg8GoCQjw9UE3cBAFjwqZeS6tnzyX2F4T10sPAkGkUNsmj33Qs89P3BCBwbar//wUMyeL7' +
+            '8v/9/UJHf87WY1qHADChX5Fldsj8ULjjdwTF0m/jRtodTIVAwIkhq17cIDQAVBSgJyggSDsXn08WS0Q98bTriXNxO2n2Or4e/k8w' +
+            '3zLV9R+BUzSI/A8EQfUfC0ow3miM/v7QlDq663NW/ecXWc9fzLoUpdnpv3020EYBtpKzGREA5GaaXAIAaoCeqZqxIZOkHtsqNwlf' +
+            'h+/nNpQURQCQiWsCcImY4u5RNtcdx76D3Cd9BtfM+UCLKLOVSNoooCRsvtKWvg81vyDEVSZAjdmcC+dPtPSPgqsngYMw0P8PABCH' +
+            'C4bp9DKBMDR0INCqPiKmRrifYDRJqZd2LTIXCT/AEsO1Y4vrx9WNzJSOo+N7EmCLARCpdtuHa0fdkzZ3Uy9N22km+3Ga+3WbpgSO' +
+            'oaOFKfSBSCPdKuOnsrtau9OxjQL0R6N0JV90I/KECWWYaDABQnlgIfNj5CcI6yZq/0fS6wihN5C4SWtChAz1Y0oj+leVkMGOCcGx' +
+            '/6/HoYtjppLyGIDyX4q8Yk8zWdentpjmkbDRPcx8+0CPE1yl8mNNwBGefjJIoyMJAK0FTGhIjeXklYYotJPU9komJ0RJTMqlk+lc' +
+            'bDuVJGgAqDZF8oJzcR1bLwzzIkZGddu9LwKh7i8YT6T2XXspAiDXua6iZVwnoLMzoWbPnzPZ4rxLKB9sBA0dfbca6DaFUsViox4c' +
+            'ghJawTdGDdATKzIYP9CIGSKpkTQ4D1ZpDVesBAXEUswOzimmJIgV29lodU9LctBXu0UBwI1J5mvajpnHRSKLuNjrIQgUHRQtdCF6' +
+            'U3v5hWWBz6b5E2h0xVPnBxgA0H4AAoBxHMThE2l3JXIgvFkw2UJKFhEB/LpASIBYJbrJ6Inr+sE9yfMxgfX9ZqnUEip4eZJ21izx' +
+            'g1204RiC88oxc33pvQKqbd+G9BFqMN1O0E8as92cbQjOjDfP+zEvlGBqZ114FB9rU1BSRgCgDSFuMSiUcGG+dOTAwO8SJDMQHtO9' +
+            'NDAmgspmOVC0W2JGeylLrikoolmCmfb1OWF+1I+tL/XitvRx8PKmABhJcxPfr/tprwRjkj4sHZhmWeaNIDp7SH6XvPc37VEvzz8f' +
+            'AXjmK1DYKMGYAA0A50GauF83rHeT6sZ8MccMhAGDOQ1JWoFyBzTwEP0pxFAOkiF+SCh3jSVJvZpd2rESFvgJcp+TeGOb4/pcZL3B' +
+            '/uYSS23UR6JEY/J1vQZwx27e+l56+ZSM26zlZ+cOYDNrtnIZvsjLHkKBjRkuJsBuBVOCbQBAUcBQnwnUCKKFAjkOTUIMgLCE9RQw' +
+            '3IKEOCi2vrNLZq+a7Fcz2sRkskwSyo8tbt/36fvWhNHOq+4zHru+3y2gSHvqtztWAhNuuPA+VDxW17+7N+m1+/HLW1uHJh7cjeep' +
+            'j3Wfct3QVmt2AYB6U6gmGgFA8sg6nSiDCAfiz3t75I/d4Gw9Myld5N01ZiJ0bIqvQ0jV9XXha4nr5v8AXYd+y399PxfThy6+/WHm' +
+            'nG1XX2OgaFNowaPHmWg3ZQzSVvh1T/UlV8WbBKCsVpBj7av5YoVa3Uv8SKwGalQ6ADjHwgNBA8D/9sjSwNHn9X1CLH09npQjsp6g' +
+            'moRhQHgs5xxRI2bQf/dCTNVHGkN8HTVGBVo/nvi/jMf35/tIzsefixgnmkTRWNrR9d1vFwIqTZMilPI7dT+AmahVG06tRY0I81XR' +
+            '99JAtM1xA5RBqfohwcx/DQDNYL5G/4Xx/wUAcl40gWOI6tsxOron7NPPmevZb/Al5hfRJm4nnIuqL/N2guIf5db3ydzc/QEAvJB5' +
+            'Gvv6CUAEiSD1ZJAZmGG80QDRjV9RjOkwtlz7Dr5OPCk/GKkbMkcYZuo6ImjGRCCQdjWBHTBipkQEDfrRgFL1eUyiSVQbeg4y37Dd' +
+            'mAlJIdGgSWhRTa+Alua6E0bFj+C+CCB0jTVA8YAh36G3URMIjL2zpXQY2zeaKB0TWihaoP9Sx/0eOJx/sz0MVK65FrQ70J6z53V7' +
+            'ZIrkNy1USPH1wmNzfQRKB9ki9aWOHYM/b/pu7z5fRqDMXZOSvE/moa8H8+Xfqo7ty4zNz0muky/m7tF0kP7snEzR9IhorAr343wZ' +
+            'OWeOywaNxP8H1saPiCdPawIAAAAASUVORK5CYII=';
+        document.head.querySelectorAll('link[rel~="icon"]').forEach(function (link) {
+            link.remove();
+        });
+        document.head.appendChild(favicon);
+
         installNativeAftSoundBlocker();
         installPhysicalScannerInput();
         installManualAsciiInput();
